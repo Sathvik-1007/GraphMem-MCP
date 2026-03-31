@@ -9,21 +9,63 @@ exact match -> case-insensitive match -> FTS5 suggestions.
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from graphrag_mcp.db.connection import Database
 from graphrag_mcp.models.entity import Entity
 from graphrag_mcp.models.observation import Observation
 from graphrag_mcp.models.relationship import Relationship
-from graphrag_mcp.utils.errors import (
-    EntityNotFoundError,
-    RelationshipError,
-)
+from graphrag_mcp.utils.errors import EntityNotFoundError
 from graphrag_mcp.utils.ids import generate_id
 from graphrag_mcp.utils.logging import get_logger
 
 log = get_logger("graph.engine")
+
+
+class EntityResult(TypedDict):
+    """Return type for individual results from :meth:`GraphEngine.add_entities`."""
+
+    id: str
+    name: str
+    status: Literal["created", "merged"]
+
+
+class RelationshipResult(TypedDict):
+    """Return type for individual results from :meth:`GraphEngine.add_relationships`."""
+
+    id: str
+    status: Literal["created", "updated"]
+
+
+class ObservationResult(TypedDict):
+    """Return type for individual results from :meth:`GraphEngine.add_observations`."""
+
+    id: str
+    entity_id: str
+    content: str
+
+
+class ConnectedEntry(TypedDict):
+    """Shape of entries in ``StatsResult.most_connected``."""
+
+    id: str
+    name: str
+    entity_type: str
+    degree: int
+
+
+class StatsResult(TypedDict):
+    """Return type for :meth:`GraphEngine.get_stats`."""
+
+    entities: int
+    relationships: int
+    observations: int
+    entity_types: dict[str, int]
+    relationship_types: dict[str, int]
+    most_connected: list[ConnectedEntry]
+    recent_entities: list[dict[str, object]]
 
 
 class GraphEngine:
@@ -39,7 +81,7 @@ class GraphEngine:
 
     # ── Entity CRUD ──────────────────────────────────────────────────────
 
-    async def add_entities(self, entities: list[Entity]) -> list[dict[str, Any]]:
+    async def add_entities(self, entities: list[Entity]) -> list[EntityResult]:
         """Insert or merge a batch of entities.
 
         On conflict (same name + entity_type), descriptions are appended
@@ -53,7 +95,7 @@ class GraphEngine:
         if not entities:
             return []
 
-        results: list[dict[str, Any]] = []
+        results: list[EntityResult] = []
         now = time.time()
 
         async with self._db.transaction():
@@ -88,7 +130,7 @@ class GraphEngine:
                         ),
                     )
                     results.append(
-                        {"id": str(existing["id"]), "name": entity.name, "status": "merged"}
+                        EntityResult(id=str(existing["id"]), name=entity.name, status="merged")
                     )
                     log.debug("Merged entity %r (type=%s)", entity.name, entity.entity_type)
                 else:
@@ -106,7 +148,7 @@ class GraphEngine:
                             entity.updated_at,
                         ),
                     )
-                    results.append({"id": entity.id, "name": entity.name, "status": "created"})
+                    results.append(EntityResult(id=entity.id, name=entity.name, status="created"))
                     log.debug("Created entity %r (type=%s)", entity.name, entity.entity_type)
 
         log.info(
@@ -210,6 +252,7 @@ class GraphEngine:
                         "SELECT id FROM entities WHERE name = ? COLLATE NOCASE", (name,)
                     )
                 if row is None:
+                    log.debug("Entity %r not found for deletion, skipping", name)
                     continue
 
                 entity_id = str(row["id"])
@@ -249,7 +292,9 @@ class GraphEngine:
 
     # ── Relationship CRUD ────────────────────────────────────────────────
 
-    async def add_relationships(self, relationships: list[Relationship]) -> list[dict[str, Any]]:
+    async def add_relationships(
+        self, relationships: list[Relationship]
+    ) -> list[RelationshipResult]:
         """Insert or update a batch of relationships.
 
         On conflict (same source, target, type), the weight is updated
@@ -261,7 +306,7 @@ class GraphEngine:
         if not relationships:
             return []
 
-        results: list[dict[str, Any]] = []
+        results: list[RelationshipResult] = []
         now = time.time()
 
         async with self._db.transaction():
@@ -289,7 +334,7 @@ class GraphEngine:
                             str(existing["id"]),
                         ),
                     )
-                    results.append({"id": str(existing["id"]), "status": "updated"})
+                    results.append(RelationshipResult(id=str(existing["id"]), status="updated"))
                 else:
                     await self._db.execute(
                         "INSERT INTO relationships "
@@ -306,7 +351,7 @@ class GraphEngine:
                             rel.updated_at,
                         ),
                     )
-                    results.append({"id": rel.id, "status": "created"})
+                    results.append(RelationshipResult(id=rel.id, status="created"))
 
         log.info(
             "add_relationships: %d processed (%d created, %d updated)",
@@ -415,7 +460,7 @@ class GraphEngine:
 
     async def add_observations(
         self, entity_name: str, observations: list[Observation]
-    ) -> list[dict[str, Any]]:
+    ) -> list[ObservationResult]:
         """Attach observations to an entity (resolved by name).
 
         Each observation's ``entity_id`` is overwritten with the
@@ -428,7 +473,7 @@ class GraphEngine:
             return []
 
         entity = await self.resolve_entity(entity_name)
-        results: list[dict[str, Any]] = []
+        results: list[ObservationResult] = []
 
         async with self._db.transaction():
             for obs in observations:
@@ -440,11 +485,11 @@ class GraphEngine:
                     (obs_id, entity.id, obs.content, obs.source, now),
                 )
                 results.append(
-                    {
-                        "id": obs_id,
-                        "entity_id": entity.id,
-                        "content": obs.content,
-                    }
+                    ObservationResult(
+                        id=obs_id,
+                        entity_id=entity.id,
+                        content=obs.content,
+                    )
                 )
 
         log.info(
@@ -518,8 +563,8 @@ class GraphEngine:
                 (f'"{fts_query}"', limit),
             )
             suggestions = [str(r["name"]) for r in rows]
-        except Exception:  # noqa: BLE001 — FTS table may not exist
-            pass
+        except (sqlite3.Error, ValueError, OSError) as exc:
+            log.debug("FTS5 suggestion query failed for %r: %s — falling back to LIKE", name, exc)
 
         # Fallback to LIKE if FTS5 returned nothing
         if not suggestions:
@@ -533,10 +578,10 @@ class GraphEngine:
 
     # ── Stats ────────────────────────────────────────────────────────────
 
-    async def get_stats(self) -> dict[str, Any]:
+    async def get_stats(self) -> StatsResult:
         """Compute summary statistics for the knowledge graph.
 
-        Returns a dict with:
+        Returns a :class:`StatsResult` with:
         - ``entities``: Total entity count.
         - ``relationships``: Total relationship count.
         - ``observations``: Total observation count.
@@ -576,12 +621,12 @@ class GraphEngine:
             "LIMIT 10"
         )
         most_connected = [
-            {
-                "id": str(r["id"]),
-                "name": str(r["name"]),
-                "entity_type": str(r["entity_type"]),
-                "degree": int(r["degree"]),
-            }
+            ConnectedEntry(
+                id=str(r["id"]),
+                name=str(r["name"]),
+                entity_type=str(r["entity_type"]),
+                degree=int(r["degree"]),
+            )
             for r in connected_rows
         ]
 
@@ -591,12 +636,12 @@ class GraphEngine:
         )
         recent_entities = [Entity.from_row(r).to_dict() for r in recent_rows]
 
-        return {
-            "entities": entity_count,
-            "relationships": rel_count,
-            "observations": obs_count,
-            "entity_types": entity_types,
-            "relationship_types": relationship_types,
-            "most_connected": most_connected,
-            "recent_entities": recent_entities,
-        }
+        return StatsResult(
+            entities=entity_count,
+            relationships=rel_count,
+            observations=obs_count,
+            entity_types=entity_types,
+            relationship_types=relationship_types,
+            most_connected=most_connected,
+            recent_entities=recent_entities,
+        )

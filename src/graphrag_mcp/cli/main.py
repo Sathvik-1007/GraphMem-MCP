@@ -10,23 +10,22 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import click
 
 from graphrag_mcp import __version__
-from graphrag_mcp.utils.config import Config, load_config
-from graphrag_mcp.utils.errors import GraphRAGError
-from graphrag_mcp.utils.logging import setup_logging
+from graphrag_mcp.utils import GraphRAGError, get_logger, load_config, setup_logging
+
+log = get_logger("cli")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
 def _run_async(coro: Any) -> Any:
-    """Run an async coroutine from a synchronous Click command."""
     return asyncio.run(coro)
 
 
@@ -36,9 +35,8 @@ async def _open_db(db_path: str | None = None) -> tuple[Any, Any]:
     Lazily imports heavy modules so that lightweight commands (like
     ``--version``) stay fast.
     """
-    from graphrag_mcp.db.connection import Database
-    from graphrag_mcp.db.schema import run_migrations
-    from graphrag_mcp.graph.engine import GraphEngine
+    from graphrag_mcp.db import Database, run_migrations
+    from graphrag_mcp.graph import GraphEngine
 
     if db_path:
         os.environ["GRAPHRAG_DB_PATH"] = db_path
@@ -52,7 +50,6 @@ async def _open_db(db_path: str | None = None) -> tuple[Any, Any]:
 
 
 def _print_error(message: str) -> None:
-    """Print a red error message to stderr and exit."""
     click.secho(f"Error: {message}", fg="red", err=True)
 
 
@@ -85,7 +82,7 @@ def cli() -> None:
 )
 @click.option(
     "--host",
-    default="0.0.0.0",
+    default="127.0.0.1",
     show_default=True,
     help="Bind address for SSE / HTTP transports.",
 )
@@ -108,6 +105,7 @@ def server(transport: str, db_path: str | None, host: str, port: int) -> None:
 
         run(transport=transport, host=host, port=port)
     except GraphRAGError as exc:
+        log.debug("Server command failed: %s", exc, exc_info=True)
         _print_error(str(exc))
         raise SystemExit(1) from exc
 
@@ -145,6 +143,7 @@ def install(agent: str, scope: str) -> None:
         click.secho(f"Installed {agent} skill ({scope}):", fg="green")
         click.echo(f"  {result_path}")
     except GraphRAGError as exc:
+        log.debug("Install command failed: %s", exc, exc_info=True)
         _print_error(str(exc))
         raise SystemExit(1) from exc
 
@@ -164,8 +163,7 @@ def init(db_path: str | None) -> None:
     """Initialize a .graphrag directory and database."""
 
     async def _init() -> None:
-        from graphrag_mcp.db.connection import Database
-        from graphrag_mcp.db.schema import get_current_version, run_migrations
+        from graphrag_mcp.db import Database, get_current_version, run_migrations
 
         if db_path:
             os.environ["GRAPHRAG_DB_PATH"] = db_path
@@ -188,6 +186,7 @@ def init(db_path: str | None) -> None:
     try:
         _run_async(_init())
     except GraphRAGError as exc:
+        log.debug("Init command failed: %s", exc, exc_info=True)
         _print_error(str(exc))
         raise SystemExit(1) from exc
 
@@ -214,7 +213,7 @@ def status(db_path: str | None, as_json: bool) -> None:
     """Show graph statistics."""
 
     async def _status() -> dict[str, Any]:
-        from graphrag_mcp.db.schema import get_current_version
+        from graphrag_mcp.db import get_current_version
 
         db, graph = await _open_db(db_path)
         try:
@@ -294,17 +293,20 @@ def export(db_path: str | None, fmt: str, output_path: str | None) -> None:
             all_observations: list[dict[str, Any]] = []
 
             # Fetch relationships and observations for each entity
+            skipped: list[str] = []
             for entity in entities:
                 try:
                     rels = await graph.get_relationships(entity.name)
                     all_relationships.extend(rels)
-                except GraphRAGError:
-                    pass
+                except GraphRAGError as exc:
+                    log.warning("Export: skipping relationships for %r: %s", entity.name, exc)
+                    skipped.append(f"relationships:{entity.name}")
                 try:
                     obs = await graph.get_observations(entity.name)
                     all_observations.extend([o.to_dict() for o in obs])
-                except GraphRAGError:
-                    pass
+                except GraphRAGError as exc:
+                    log.warning("Export: skipping observations for %r: %s", entity.name, exc)
+                    skipped.append(f"observations:{entity.name}")
 
             # Deduplicate relationships by id
             seen_rel_ids: set[str] = set()
@@ -320,6 +322,7 @@ def export(db_path: str | None, fmt: str, output_path: str | None) -> None:
                 "entities": [e.to_dict() for e in entities],
                 "relationships": unique_rels,
                 "observations": all_observations,
+                "skipped": skipped,
             }
         finally:
             await db.close()
@@ -333,10 +336,30 @@ def export(db_path: str | None, fmt: str, output_path: str | None) -> None:
     payload = json.dumps(data, indent=2, ensure_ascii=False, default=str)
 
     if output_path:
-        Path(output_path).write_text(payload, encoding="utf-8")
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=out.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+            os.replace(tmp, out)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError as cleanup_exc:
+                log.debug("Failed to clean up temp file %s: %s", tmp, cleanup_exc)
+            raise
         click.secho(f"Exported to {output_path}", fg="green")
     else:
         click.echo(payload)
+
+    skipped_items: list[str] = data.get("skipped", [])
+    if skipped_items:
+        click.secho(
+            f"Warning: {len(skipped_items)} item(s) skipped during export:", fg="yellow", err=True
+        )
+        for item in skipped_items:
+            click.echo(f"  - {item}", err=True)
 
 
 # ── import ───────────────────────────────────────────────────────────────────
@@ -355,9 +378,7 @@ def import_data(input_file: str, db_path: str | None) -> None:
     """Import graph data from a JSON file."""
 
     async def _import() -> dict[str, int]:
-        from graphrag_mcp.models.entity import Entity
-        from graphrag_mcp.models.observation import Observation
-        from graphrag_mcp.models.relationship import Relationship
+        from graphrag_mcp.models import Entity, Observation, Relationship
 
         raw = Path(input_file).read_text(encoding="utf-8")
         try:
@@ -426,12 +447,17 @@ def import_data(input_file: str, db_path: str | None) -> None:
                     )
                     obs_by_entity.setdefault(entity_name, []).append(obs)
 
+                skipped_obs: list[str] = []
                 for entity_name, obs_list in obs_by_entity.items():
                     try:
                         results = await graph.add_observations(entity_name, obs_list)
                         counts["observations"] += len(results)
-                    except GraphRAGError:
-                        pass  # skip observations for unresolvable entities
+                    except GraphRAGError as exc:
+                        log.warning("Import: skipping observations for %r: %s", entity_name, exc)
+                        skipped_obs.append(entity_name)
+
+                if skipped_obs:
+                    counts["skipped_observations"] = len(skipped_obs)
 
             return counts
         finally:
@@ -447,6 +473,9 @@ def import_data(input_file: str, db_path: str | None) -> None:
     click.echo(f"  Entities:      {counts['entities']}")
     click.echo(f"  Relationships: {counts['relationships']}")
     click.echo(f"  Observations:  {counts['observations']}")
+    skipped_count = counts.get("skipped_observations", 0)
+    if skipped_count:
+        click.secho(f"  Skipped:       {skipped_count} observation group(s) failed", fg="yellow")
 
 
 # ── validate ─────────────────────────────────────────────────────────────────
@@ -464,7 +493,7 @@ def validate(db_path: str | None) -> None:
     """Validate database integrity."""
 
     async def _validate() -> list[str]:
-        from graphrag_mcp.db.schema import get_current_version
+        from graphrag_mcp.db import get_current_version
 
         db, _graph = await _open_db(db_path)
         issues: list[str] = []
@@ -531,7 +560,6 @@ def validate(db_path: str | None) -> None:
 
 
 def main() -> None:
-    """Package entry point (called by ``graphrag-mcp`` console script)."""
     cli()
 
 

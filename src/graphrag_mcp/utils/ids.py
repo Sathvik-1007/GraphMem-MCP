@@ -13,9 +13,4 @@ from ulid import ULID
 
 
 def generate_id() -> str:
-    """Generate a new ULID as a lowercase string.
-
-    Returns:
-        A 26-character lowercase ULID string, e.g. '01h5tn3k...'
-    """
     return str(ULID()).lower()

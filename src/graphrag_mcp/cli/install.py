@@ -9,9 +9,15 @@ Supports: claude, opencode, codex, gemini, cursor, windsurf, amp.
 from __future__ import annotations
 
 import importlib.resources
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from graphrag_mcp.utils.logging import get_logger
+
+log = get_logger("cli.install")
 
 # ---------------------------------------------------------------------------
 # Agent registry
@@ -109,26 +115,34 @@ any structured knowledge across sessions.
 ### Write Tools
 - **add_entities** — Add one or more entities (name, type, observations) to the
   knowledge graph. Deduplicates by name.
-- **add_relations** — Create directed relationships between existing entities
-  (source → relation → target).
+- **add_relationships** — Create directed relationships between existing entities
+  (source → relationship_type → target).
 - **add_observations** — Append observations to an existing entity.
+- **update_entity** — Update fields (description, properties, type) on an
+  existing entity.
+- **delete_entities** — Remove one or more entities by name, cascading to their
+  observations and relationships.
+- **merge_entities** — Merge a source entity into a target, moving all
+  observations and relationships.
 
 ### Read Tools
-- **search_entities** — Semantic search over entities using natural-language
-  queries.  Returns the most relevant entities with their relationships.
+- **search_nodes** — Hybrid semantic + full-text search over entities using
+  natural-language queries.  Returns the most relevant entities with their
+  relationships.
+- **find_connections** — Discover entities connected to a given entity via
+  multi-hop graph traversal (BFS).
 - **get_entity** — Retrieve a single entity by exact name, including all its
   observations and relationships.
-- **list_entities** — List entities, optionally filtered by type.
-
-### Management Tools
-- **delete_entity** — Remove an entity and its associated relationships.
-- **delete_relation** — Remove a specific relationship.
-- **delete_observation** — Remove an observation from an entity.
+- **read_graph** — Get an overview of the knowledge graph: counts, type
+  distributions, most connected entities, and recent updates.
+- **get_subgraph** — Extract a neighbourhood subgraph around one or more seed
+  entities within a given radius.
+- **find_paths** — Find shortest paths between two entities in the graph.
 
 ## When to Use
 
 1. **Session start** — Search for relevant context before diving into the task.
-   `search_entities("current project architecture")` gives you a warm start.
+   `search_nodes("current project architecture")` gives you a warm start.
 2. **Discovering important concepts** — When you encounter key architectural
    decisions, domain terms, or people, add them as entities.
 3. **Establishing relationships** — Link entities together to build a navigable
@@ -192,8 +206,8 @@ def _load_skill_content() -> str:
         text = ref.read_text(encoding="utf-8")
         if text.strip():
             return text
-    except Exception:  # noqa: BLE001
-        pass
+    except (FileNotFoundError, OSError, TypeError, ValueError) as exc:
+        log.debug("Could not load SKILL.md via importlib.resources: %s — trying filesystem", exc)
 
     # 2. Filesystem fallback (editable / dev installs)
     skill_path = Path(__file__).resolve().parents[3] / "skills" / "SKILL.md"
@@ -207,14 +221,37 @@ def _load_skill_content() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Atomic file writer
+# ---------------------------------------------------------------------------
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Write *content* to *path* atomically using temp file + rename.
+
+    Ensures that a crash or power loss never leaves a half-written file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError as cleanup_exc:
+            log.debug("Failed to clean up temp file %s: %s", tmp_path, cleanup_exc)
+        raise
+
+
+# ---------------------------------------------------------------------------
 # Low-level writers
 # ---------------------------------------------------------------------------
 
 
 def _write_overwrite(path: Path, content: str) -> None:
     """Write *content* to a dedicated file, creating directories as needed."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    _atomic_write(path, content)
 
 
 def _write_section(path: Path, content: str) -> None:
@@ -229,16 +266,15 @@ def _write_section(path: Path, content: str) -> None:
         existing = path.read_text(encoding="utf-8")
         if _SECTION_BEGIN in existing and _SECTION_END in existing:
             new_content = _SECTION_RE.sub(section, existing, count=1)
-            path.write_text(new_content, encoding="utf-8")
+            _atomic_write(path, new_content)
             return
         # Markers absent — append.
         separator = (
             "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
         )
-        path.write_text(f"{existing}{separator}{section}\n", encoding="utf-8")
+        _atomic_write(path, f"{existing}{separator}{section}\n")
     else:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"{section}\n", encoding="utf-8")
+        _atomic_write(path, f"{section}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +397,7 @@ def uninstall_skill(
             return False
         cleaned = _SECTION_RE.sub("", existing).strip()
         if cleaned:
-            target.write_text(cleaned + "\n", encoding="utf-8")
+            _atomic_write(target, cleaned + "\n")
         else:
             # File is now empty — remove it.
             target.unlink()
@@ -383,5 +419,5 @@ def _remove_empty_parents(directory: Path, boundary: Path) -> None:
         try:
             current.rmdir()  # only succeeds if empty
         except OSError:
-            break
+            break  # directory not empty or not removable — stop climbing
         current = current.parent

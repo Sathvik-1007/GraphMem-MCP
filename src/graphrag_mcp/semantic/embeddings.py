@@ -12,11 +12,13 @@ are cached by content hash (SHA-256) in the database to avoid recomputation.
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 import struct
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
+import numpy.typing as npt
 
 from graphrag_mcp.utils.errors import DimensionMismatchError, EmbeddingError, ModelLoadError
 from graphrag_mcp.utils.logging import get_logger
@@ -24,22 +26,33 @@ from graphrag_mcp.utils.logging import get_logger
 if TYPE_CHECKING:
     from graphrag_mcp.db.connection import Database
 
+
+class EmbeddingModel(Protocol):
+    """Structural type for sentence-transformer-like embedding models."""
+
+    def encode(
+        self,
+        sentences: list[str],
+        *,
+        normalize_embeddings: bool = ...,
+        batch_size: int = ...,
+        show_progress_bar: bool = ...,
+    ) -> npt.NDArray[np.float32]: ...
+
+
 log = get_logger("semantic.embeddings")
 
 
 def _content_hash(text: str) -> str:
-    """SHA-256 hash of text for cache key."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _embedding_to_bytes(embedding: list[float] | np.ndarray) -> bytes:
-    """Pack a float array into raw bytes for SQLite BLOB storage."""
     arr = np.asarray(embedding, dtype=np.float32)
     return arr.tobytes()
 
 
 def _bytes_to_embedding(data: bytes) -> list[float]:
-    """Unpack raw bytes into a float list."""
     return list(struct.unpack(f"{len(data) // 4}f", data))
 
 
@@ -63,9 +76,24 @@ class EmbeddingEngine:
         self._use_onnx = use_onnx
         self._device = device
         self._cache_size = cache_size
-        self._model: object | None = None
+        self._model: EmbeddingModel | None = None
         self._dimension: int | None = None
         self._available = False
+        self._db: Database | None = None
+
+    def set_db(self, db: Database) -> None:
+        """Store a database reference for use as default in subsequent calls."""
+        self._db = db
+
+    def _resolve_db(self, db: Database | None) -> Database:
+        """Return the explicitly passed db, or fall back to self._db."""
+        if db is not None:
+            return db
+        if self._db is not None:
+            return self._db
+        raise EmbeddingError(
+            "No database available. Pass db explicitly or call set_db()/initialize() first."
+        )
 
     @property
     def dimension(self) -> int:
@@ -76,7 +104,6 @@ class EmbeddingEngine:
 
     @property
     def available(self) -> bool:
-        """Whether the embedding engine is operational."""
         return self._available
 
     @property
@@ -84,7 +111,7 @@ class EmbeddingEngine:
         return self._model_name
 
     def _load_model(self) -> None:
-        """Load the embedding model (ONNX or PyTorch)."""
+        """Load the embedding model, trying ONNX first then PyTorch fallback."""
         if self._model is not None:
             return
 
@@ -104,8 +131,8 @@ class EmbeddingEngine:
                 self._available = True
                 log.info("ONNX model loaded successfully")
                 return
-            except Exception as e:
-                log.debug("ONNX loading failed (%s), falling back to PyTorch", e)
+            except (ImportError, OSError, RuntimeError) as e:
+                log.info("ONNX loading failed (%s) — falling back to PyTorch", e)
 
         # Fall back to PyTorch
         try:
@@ -122,7 +149,7 @@ class EmbeddingEngine:
             raise ModelLoadError(
                 "sentence-transformers not installed. Install with: pip install graphrag-mcp"
             ) from exc
-        except Exception as exc:
+        except (OSError, RuntimeError) as exc:
             raise ModelLoadError(
                 f"Failed to load embedding model {self._model_name!r}: {exc}"
             ) from exc
@@ -130,17 +157,20 @@ class EmbeddingEngine:
     def _detect_dimension(self) -> int:
         """Run a test embedding to detect output dimensionality."""
         self._load_model()
+        if self._model is None:
+            raise EmbeddingError("Model failed to load — _load_model did not set _model.")
         test = self._model.encode(["test"], normalize_embeddings=True)
         dim = int(test.shape[1])
         log.info("Detected embedding dimension: %d", dim)
         return dim
 
-    async def initialize(self, db: Database) -> None:
+    async def initialize(self, db: Database | None = None) -> None:
         """Load model, detect dimension, validate against DB metadata.
 
         If the database has no dimension stored, stores the detected one.
         If it has a different dimension, raises DimensionMismatchError.
         """
+        db = self._resolve_db(db)
         try:
             self._load_model()
             self._dimension = self._detect_dimension()
@@ -165,9 +195,10 @@ class EmbeddingEngine:
             await self._ensure_vec_tables(db)
 
             self._available = True
+            self._db = db
         except (ModelLoadError, DimensionMismatchError):
             raise
-        except Exception as exc:
+        except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
             log.warning("Embedding initialization failed: %s. Semantic search disabled.", exc)
             self._available = False
 
@@ -187,11 +218,11 @@ class EmbeddingEngine:
                     embedding float[{dim}]
                 )
             """)
-        except Exception as exc:
+        except (sqlite3.Error, OSError) as exc:
             log.warning("Could not create vector tables: %s", exc)
             self._available = False
 
-    async def embed(self, texts: list[str], db: Database) -> list[list[float]]:
+    async def embed(self, texts: list[str], db: Database | None = None) -> list[list[float] | None]:
         """Compute embeddings with caching.
 
         Checks the embedding_cache table first. Only computes embeddings
@@ -199,13 +230,16 @@ class EmbeddingEngine:
 
         Args:
             texts: Strings to embed.
-            db: Database for cache access.
+            db: Database for cache access. Falls back to ``self._db`` if not provided.
 
         Returns:
             List of embedding vectors (same order as texts).
+            A ``None`` entry means embedding failed or was unavailable for that text.
         """
         if not self._available:
             raise EmbeddingError("Embedding engine not available.")
+
+        db = self._resolve_db(db)
 
         results: list[list[float] | None] = [None] * len(texts)
         uncached_indices: list[int] = []
@@ -227,6 +261,8 @@ class EmbeddingEngine:
         # Compute uncached
         if uncached_texts:
             self._load_model()
+            if self._model is None:
+                raise EmbeddingError("Model failed to load — _load_model did not set _model.")
             vectors = self._model.encode(
                 uncached_texts,
                 normalize_embeddings=True,
@@ -258,12 +294,17 @@ class EmbeddingEngine:
                     (excess,),
                 )
 
-        return results  # type: ignore[return-value]
+        # Post-condition: all entries must be non-None after successful computation
+        for i, entry in enumerate(results):
+            if entry is None:
+                raise EmbeddingError(f"Embedding computation produced None for text at index {i}.")
+
+        return results
 
     async def upsert_entity_embedding(
-        self, entity_id: str, embedding: list[float], db: Database
+        self, entity_id: str, embedding: list[float], db: Database | None = None
     ) -> None:
-        """Store or update an entity's embedding in the vector table."""
+        db = self._resolve_db(db)
         blob = _embedding_to_bytes(embedding)
         await db.execute(
             "INSERT OR REPLACE INTO entity_embeddings (id, embedding) VALUES (?, ?)",
@@ -271,19 +312,19 @@ class EmbeddingEngine:
         )
 
     async def upsert_observation_embedding(
-        self, obs_id: str, embedding: list[float], db: Database
+        self, obs_id: str, embedding: list[float], db: Database | None = None
     ) -> None:
-        """Store or update an observation's embedding in the vector table."""
+        db = self._resolve_db(db)
         blob = _embedding_to_bytes(embedding)
         await db.execute(
             "INSERT OR REPLACE INTO observation_embeddings (id, embedding) VALUES (?, ?)",
             (obs_id, blob),
         )
 
-    async def delete_entity_embedding(self, entity_id: str, db: Database) -> None:
-        """Remove an entity's embedding."""
+    async def delete_entity_embedding(self, entity_id: str, db: Database | None = None) -> None:
+        db = self._resolve_db(db)
         await db.execute("DELETE FROM entity_embeddings WHERE id = ?", (entity_id,))
 
-    async def delete_observation_embedding(self, obs_id: str, db: Database) -> None:
-        """Remove an observation's embedding."""
+    async def delete_observation_embedding(self, obs_id: str, db: Database | None = None) -> None:
+        db = self._resolve_db(db)
         await db.execute("DELETE FROM observation_embeddings WHERE id = ?", (obs_id,))

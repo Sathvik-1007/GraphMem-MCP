@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 import aiosqlite
 
@@ -33,7 +33,6 @@ _PRAGMAS = [
 
 
 async def _apply_pragmas(db: aiosqlite.Connection) -> None:
-    """Apply performance PRAGMAs to an open connection."""
     for pragma in _PRAGMAS:
         await db.execute(pragma)
 
@@ -57,6 +56,12 @@ class Database:
     def __init__(self, path: Path) -> None:
         self._path = path.resolve()
         self._conn: aiosqlite.Connection | None = None
+        self._vec_loaded = False
+
+    @property
+    def vec_loaded(self) -> bool:
+        """Whether the sqlite-vec extension was loaded successfully."""
+        return self._vec_loaded
 
     @property
     def path(self) -> Path:
@@ -80,7 +85,7 @@ class Database:
             self._conn.row_factory = aiosqlite.Row
             await _apply_pragmas(self._conn)
             await self._load_extensions()
-        except Exception as exc:
+        except (sqlite3.Error, OSError, TypeError, ValueError) as exc:
             raise DatabaseError(f"Failed to open database: {exc}") from exc
 
     async def _load_extensions(self) -> None:
@@ -92,41 +97,37 @@ class Database:
             conn_raw = self._conn._conn  # underlying sqlite3.Connection
             sqlite_vec.load(conn_raw)
             await self._conn.enable_load_extension(False)
+            self._vec_loaded = True
             log.debug("sqlite-vec extension loaded")
         except ImportError:
             log.warning("sqlite-vec not installed — vector search disabled")
-        except Exception as exc:
-            log.warning("Failed to load sqlite-vec: %s", exc)
+        except (sqlite3.Error, OSError) as exc:
+            log.warning("Failed to load sqlite-vec: %s — vector search disabled", exc)
 
     async def close(self) -> None:
-        """Close the database connection."""
         if self._conn is not None:
             await self._conn.close()
             self._conn = None
             log.debug("Database closed")
 
-    async def execute(self, sql: str, params: tuple = ()) -> aiosqlite.Cursor:
-        """Execute a single SQL statement."""
+    async def execute(self, sql: str, params: tuple[object, ...] = ()) -> aiosqlite.Cursor:
         try:
             return await self.conn.execute(sql, params)
         except sqlite3.Error as exc:
             raise DatabaseError(f"SQL error: {exc}", details=sql) from exc
 
     async def execute_many(self, sql: str, params_seq: list[tuple]) -> None:
-        """Execute a SQL statement for each parameter set."""
         try:
             await self.conn.executemany(sql, params_seq)
         except sqlite3.Error as exc:
             raise DatabaseError(f"SQL error in executemany: {exc}", details=sql) from exc
 
-    async def fetch_one(self, sql: str, params: tuple = ()) -> dict | None:
-        """Execute and fetch a single row as a dict."""
+    async def fetch_one(self, sql: str, params: tuple[object, ...] = ()) -> dict[str, Any] | None:
         cursor = await self.execute(sql, params)
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-    async def fetch_all(self, sql: str, params: tuple = ()) -> list[dict]:
-        """Execute and fetch all rows as dicts."""
+    async def fetch_all(self, sql: str, params: tuple[object, ...] = ()) -> list[dict[str, Any]]:
         cursor = await self.execute(sql, params)
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]

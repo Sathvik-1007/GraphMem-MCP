@@ -20,6 +20,24 @@ log = get_logger("graph.traversal")
 # to prevent runaway CTEs on dense graphs.
 _MAX_VISITED = 1000
 
+# ── Shared CTE fragments ────────────────────────────────────────────────
+# The bidirectional CASE expression that resolves the "next" entity in a
+# traversal step.  Used in find_connections, find_paths, and get_subgraph.
+_NEXT_ENTITY_BOTH = "CASE WHEN r.source_id = t.entity_id THEN r.target_id ELSE r.source_id END"
+
+# Bidirectional JOIN condition
+_JOIN_BOTH = "(r.source_id = t.entity_id OR r.target_id = t.entity_id)"
+
+# Cycle-detection sub-query — prevents revisiting nodes already in the
+# ``visited`` json_array.  Use with ``.format(next_entity=...)`` to plug
+# in the correct next-entity expression.
+_CYCLE_GUARD = (
+    "AND NOT EXISTS (\n"
+    "                  SELECT 1 FROM json_each(t.visited)\n"
+    "                  WHERE value = {next_entity}\n"
+    "              )"
+)
+
 
 class GraphTraversal:
     """Multi-hop graph traversal using recursive CTEs.
@@ -67,10 +85,8 @@ class GraphTraversal:
             next_entity = "r.source_id"
             dir_expr = "'incoming'"
         else:  # both
-            join_condition = "(r.source_id = t.entity_id OR r.target_id = t.entity_id)"
-            next_entity = (
-                "CASE WHEN r.source_id = t.entity_id THEN r.target_id ELSE r.source_id END"
-            )
+            join_condition = _JOIN_BOTH
+            next_entity = _NEXT_ENTITY_BOTH
             dir_expr = "CASE WHEN r.source_id = t.entity_id THEN 'outgoing' ELSE 'incoming' END"
 
         # Optional relationship type filter
@@ -80,6 +96,8 @@ class GraphTraversal:
             placeholders = ", ".join("?" for _ in relationship_types)
             rel_type_filter = f"AND r.relationship_type IN ({placeholders})"
             params.extend(rt.strip().lower() for rt in relationship_types)
+
+        cycle_guard = _CYCLE_GUARD.format(next_entity=next_entity)
 
         sql = f"""
         WITH RECURSIVE traverse(entity_id, depth, visited, path) AS (
@@ -99,10 +117,7 @@ class GraphTraversal:
             {rel_type_filter}
             WHERE t.depth < ?
               AND json_array_length(t.visited) < {_MAX_VISITED}
-              AND NOT EXISTS (
-                  SELECT 1 FROM json_each(t.visited)
-                  WHERE value = {next_entity}
-              )
+              {cycle_guard}
         )
         SELECT DISTINCT t.entity_id, t.depth, t.path, e.*
         FROM traverse t
@@ -181,29 +196,28 @@ class GraphTraversal:
         if source_id == target_id:
             return []
 
+        cycle_guard = _CYCLE_GUARD.format(next_entity=_NEXT_ENTITY_BOTH)
+
         sql = f"""
         WITH RECURSIVE traverse(entity_id, depth, visited, path) AS (
             SELECT ?, 0, json_array(?), json_array(json_object('entity_id', ?, 'entity_name', '', 'relationship_type', ''))
             UNION ALL
             SELECT
-                CASE WHEN r.source_id = t.entity_id THEN r.target_id ELSE r.source_id END,
+                {_NEXT_ENTITY_BOTH},
                 t.depth + 1,
                 json_insert(t.visited, '$[#]',
-                    CASE WHEN r.source_id = t.entity_id THEN r.target_id ELSE r.source_id END
+                    {_NEXT_ENTITY_BOTH}
                 ),
                 json_insert(t.path, '$[#]', json_object(
-                    'entity_id', CASE WHEN r.source_id = t.entity_id THEN r.target_id ELSE r.source_id END,
+                    'entity_id', {_NEXT_ENTITY_BOTH},
                     'entity_name', '',
                     'relationship_type', r.relationship_type
                 ))
             FROM traverse t
-            JOIN relationships r ON (r.source_id = t.entity_id OR r.target_id = t.entity_id)
+            JOIN relationships r ON {_JOIN_BOTH}
             WHERE t.depth < ?
               AND json_array_length(t.visited) < {_MAX_VISITED}
-              AND NOT EXISTS (
-                  SELECT 1 FROM json_each(t.visited)
-                  WHERE value = CASE WHEN r.source_id = t.entity_id THEN r.target_id ELSE r.source_id END
-              )
+              {cycle_guard}
         )
         SELECT t.path, t.depth
         FROM traverse t
@@ -281,25 +295,24 @@ class GraphTraversal:
         # Collect all reachable entity IDs via BFS from each seed
         all_entity_ids: set[str] = set()
 
+        cycle_guard = _CYCLE_GUARD.format(next_entity=_NEXT_ENTITY_BOTH)
+
         for seed_id in entity_ids:
             sql = f"""
             WITH RECURSIVE traverse(entity_id, depth, visited) AS (
                 SELECT ?, 0, json_array(?)
                 UNION ALL
                 SELECT
-                    CASE WHEN r.source_id = t.entity_id THEN r.target_id ELSE r.source_id END,
+                    {_NEXT_ENTITY_BOTH},
                     t.depth + 1,
                     json_insert(t.visited, '$[#]',
-                        CASE WHEN r.source_id = t.entity_id THEN r.target_id ELSE r.source_id END
+                        {_NEXT_ENTITY_BOTH}
                     )
                 FROM traverse t
-                JOIN relationships r ON (r.source_id = t.entity_id OR r.target_id = t.entity_id)
+                JOIN relationships r ON {_JOIN_BOTH}
                 WHERE t.depth < ?
                   AND json_array_length(t.visited) < {_MAX_VISITED}
-                  AND NOT EXISTS (
-                      SELECT 1 FROM json_each(t.visited)
-                      WHERE value = CASE WHEN r.source_id = t.entity_id THEN r.target_id ELSE r.source_id END
-                  )
+                  {cycle_guard}
             )
             SELECT DISTINCT entity_id FROM traverse
             """

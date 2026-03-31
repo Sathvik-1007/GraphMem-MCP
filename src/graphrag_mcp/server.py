@@ -10,27 +10,17 @@ JSON-serialisable dicts.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
 from mcp.server.fastmcp import FastMCP
 
-from graphrag_mcp.db.connection import Database
-from graphrag_mcp.db.schema import run_migrations
-from graphrag_mcp.graph.engine import GraphEngine
-from graphrag_mcp.graph.merge import EntityMerger
-from graphrag_mcp.graph.traversal import GraphTraversal
-from graphrag_mcp.models.entity import Entity
-from graphrag_mcp.models.observation import Observation
-from graphrag_mcp.models.relationship import Relationship
-from graphrag_mcp.semantic.embeddings import EmbeddingEngine
-from graphrag_mcp.semantic.search import HybridSearch
-from graphrag_mcp.utils.config import Config, load_config
-from graphrag_mcp.utils.errors import (
-    EntityNotFoundError,
-    GraphRAGError,
-)
-from graphrag_mcp.utils.logging import get_logger, setup_logging
+from graphrag_mcp.db import Database, run_migrations
+from graphrag_mcp.graph import EntityMerger, GraphEngine, GraphTraversal
+from graphrag_mcp.models import Entity, Observation, Relationship
+from graphrag_mcp.semantic import EmbeddingEngine, HybridSearch
+from graphrag_mcp.utils import Config, GraphRAGError, get_logger, load_config, setup_logging
+from graphrag_mcp.utils.errors import EntityNotFoundError
 
 log = get_logger("server")
 
@@ -56,14 +46,52 @@ class AppState:
     search: HybridSearch | None = None
 
 
+@dataclass
+class InitializedState:
+    """Narrowed view of :class:`AppState` after successful initialization.
+
+    All fields are guaranteed non-``None``.  Returned by
+    :func:`_require_state` so callers don't need individual assertions.
+    """
+
+    config: Config
+    db: Database
+    graph: GraphEngine
+    traversal: GraphTraversal
+    merger: EntityMerger
+    embeddings: EmbeddingEngine
+    search: HybridSearch
+
+
 _state = AppState()
 
 
-def _require_state() -> AppState:
-    """Return the global state or raise if the server is not initialised."""
-    if _state.db is None or _state.graph is None:
+def _require_state() -> InitializedState:
+    """Return the global state or raise if the server is not initialised.
+
+    Validates that all required fields are populated and returns an
+    :class:`InitializedState` with non-Optional types so callers don't
+    need individual ``assert`` statements.
+    """
+    if (
+        _state.config is None
+        or _state.db is None
+        or _state.graph is None
+        or _state.traversal is None
+        or _state.merger is None
+        or _state.embeddings is None
+        or _state.search is None
+    ):
         raise GraphRAGError("Server not initialised.  Is the lifespan running?")
-    return _state
+    return InitializedState(
+        config=_state.config,
+        db=_state.db,
+        graph=_state.graph,
+        traversal=_state.traversal,
+        merger=_state.merger,
+        embeddings=_state.embeddings,
+        search=_state.search,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -91,8 +119,12 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
     )
     try:
         await embeddings.initialize(db)
-    except GraphRAGError:
-        log.warning("Embedding engine unavailable — semantic search disabled")
+    except GraphRAGError as init_exc:
+        log.warning(
+            "Embedding engine unavailable — semantic search disabled: %s",
+            init_exc,
+            exc_info=True,
+        )
 
     graph = GraphEngine(db)
     traversal = GraphTraversal(db)
@@ -133,8 +165,10 @@ mcp = FastMCP("graphrag-mcp", lifespan=_lifespan)
 # ---------------------------------------------------------------------------
 
 
-def _error_response(exc: Exception) -> dict[str, Any]:
-    """Build a JSON-serialisable error dict from an exception."""
+def _error_response(exc: Exception, *, tool_name: str = "") -> dict[str, Any]:
+    """Build a structured MCP error response dict and log the failure."""
+    label = f"{tool_name}: " if tool_name else ""
+    log.debug("%sfailed: %s: %s", label, type(exc).__name__, exc)
     resp: dict[str, Any] = {
         "error": True,
         "error_type": type(exc).__name__,
@@ -148,7 +182,15 @@ def _error_response(exc: Exception) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Helper: compute and store embeddings for entities
+# Helper: compute and store embeddings for entities / observations
+# ---------------------------------------------------------------------------
+# These live in server.py (rather than in the graph or semantic layer)
+# because they need access to *both* the graph engine (to fetch entity
+# text) and the embedding engine (to compute vectors), and those two are
+# only wired together at the server level via AppState.  Moving them
+# into a separate module would require either passing both engines as
+# arguments or creating a dedicated orchestration class — neither of
+# which improves clarity given the current codebase size.
 # ---------------------------------------------------------------------------
 
 
@@ -157,28 +199,29 @@ async def _embed_entities(entity_ids: list[str]) -> None:
 
     Silently skips if the embedding engine is not available.
     """
-    st = _require_state()
-    assert st.embeddings is not None and st.graph is not None and st.db is not None  # noqa: S101
+    state = _require_state()
 
-    if not st.embeddings.available or not entity_ids:
+    if not state.embeddings.available or not entity_ids:
         return
 
     texts: list[str] = []
     valid_ids: list[str] = []
     for eid in entity_ids:
         try:
-            entity = await st.graph.get_entity_by_id(eid)
+            entity = await state.graph.get_entity_by_id(eid)
             texts.append(entity.embedding_text)
             valid_ids.append(eid)
-        except GraphRAGError:
+        except GraphRAGError as exc:
+            log.debug("Skipping entity %s during embedding: %s", eid, exc)
             continue
 
     if not texts:
         return
 
-    vectors = await st.embeddings.embed(texts, st.db)
+    vectors = await state.embeddings.embed(texts, state.db)
     for eid, vec in zip(valid_ids, vectors):
-        await st.embeddings.upsert_entity_embedding(eid, vec, st.db)
+        if vec is not None:
+            await state.embeddings.upsert_entity_embedding(eid, vec, state.db)
 
 
 async def _embed_observations(obs_results: list[dict[str, Any]]) -> None:
@@ -186,18 +229,18 @@ async def _embed_observations(obs_results: list[dict[str, Any]]) -> None:
 
     Each element of *obs_results* must have ``id`` and ``content`` keys.
     """
-    st = _require_state()
-    assert st.embeddings is not None and st.db is not None  # noqa: S101
+    state = _require_state()
 
-    if not st.embeddings.available or not obs_results:
+    if not state.embeddings.available or not obs_results:
         return
 
     texts = [str(o["content"]) for o in obs_results]
     ids = [str(o["id"]) for o in obs_results]
 
-    vectors = await st.embeddings.embed(texts, st.db)
+    vectors = await state.embeddings.embed(texts, state.db)
     for oid, vec in zip(ids, vectors):
-        await st.embeddings.upsert_observation_embedding(oid, vec, st.db)
+        if vec is not None:
+            await state.embeddings.upsert_observation_embedding(oid, vec, state.db)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -211,10 +254,17 @@ async def add_entities(entities: list[dict[str, Any]]) -> dict[str, Any]:
 
     Each entity needs: name (str), entity_type (str, e.g. 'person', 'concept', 'place').
     Optional: description (str), properties (dict), observations (list[str]).
+
+    Raises:
+        GraphRAGError: If entity creation or embedding fails.
+        KeyError/ValueError/TypeError: Returned as error dict if input is malformed.
     """
+    # NOTE: Each tool wraps its body in a try/except that catches GraphRAGError
+    # (domain errors) and input validation errors (KeyError, ValueError, TypeError),
+    # returning structured error dicts. This repetition is intentional at the MCP
+    # boundary — a decorator would obscure the error handling from tool documentation.
     try:
-        st = _require_state()
-        assert st.graph is not None and st.db is not None  # noqa: S101
+        state = _require_state()
 
         # Build Entity objects
         entity_objs: list[Entity] = []
@@ -238,7 +288,7 @@ async def add_entities(entities: list[dict[str, Any]]) -> dict[str, Any]:
                 obs_map[name] = observations
 
         # Persist entities
-        results = await st.graph.add_entities(entity_objs)
+        results = await state.graph.add_entities(entity_objs)
 
         # Compute entity embeddings
         entity_ids = [str(r["id"]) for r in results]
@@ -246,16 +296,16 @@ async def add_entities(entities: list[dict[str, Any]]) -> dict[str, Any]:
 
         # Add and embed observations for entities that had them
         for name, obs_texts in obs_map.items():
-            obs_objs = [Observation(entity_id="placeholder", content=text) for text in obs_texts]
-            obs_results = await st.graph.add_observations(name, obs_objs)
+            obs_objs = [Observation.pending(text) for text in obs_texts]
+            obs_results = await state.graph.add_observations(name, obs_objs)
             await _embed_observations(obs_results)
 
         return {"results": results, "count": len(results)}
 
     except GraphRAGError as exc:
-        return _error_response(exc)
+        return _error_response(exc, tool_name="add_entities")
     except (KeyError, ValueError, TypeError) as exc:
-        return _error_response(GraphRAGError(f"Invalid input: {exc}"))
+        return _error_response(GraphRAGError(f"Invalid input: {exc}"), tool_name="add_entities")
 
 
 @mcp.tool()
@@ -268,8 +318,7 @@ async def add_relationships(relationships: list[dict[str, Any]]) -> dict[str, An
     Duplicate edges (same source, target, type) are merged with the higher weight kept.
     """
     try:
-        st = _require_state()
-        assert st.graph is not None  # noqa: S101
+        state = _require_state()
 
         rel_objs: list[Relationship] = []
         for raw in relationships:
@@ -279,8 +328,8 @@ async def add_relationships(relationships: list[dict[str, Any]]) -> dict[str, An
             weight: float = float(raw.get("weight", 1.0))
             properties: dict[str, object] = raw.get("properties", {})
 
-            source_entity = await st.graph.resolve_entity(source_name)
-            target_entity = await st.graph.resolve_entity(target_name)
+            source_entity = await state.graph.resolve_entity(source_name)
+            target_entity = await state.graph.resolve_entity(target_name)
 
             rel = Relationship(
                 source_id=source_entity.id,
@@ -291,7 +340,7 @@ async def add_relationships(relationships: list[dict[str, Any]]) -> dict[str, An
             )
             rel_objs.append(rel)
 
-        results = await st.graph.add_relationships(rel_objs)
+        results = await state.graph.add_relationships(rel_objs)
 
         # Enrich results with names for clarity
         enriched: list[dict[str, Any]] = []
@@ -308,9 +357,11 @@ async def add_relationships(relationships: list[dict[str, Any]]) -> dict[str, An
         return {"results": enriched, "count": len(enriched)}
 
     except GraphRAGError as exc:
-        return _error_response(exc)
+        return _error_response(exc, tool_name="add_relationships")
     except (KeyError, ValueError, TypeError) as exc:
-        return _error_response(GraphRAGError(f"Invalid input: {exc}"))
+        return _error_response(
+            GraphRAGError(f"Invalid input: {exc}"), tool_name="add_relationships"
+        )
 
 
 @mcp.tool()
@@ -330,23 +381,19 @@ async def add_observations(
         source: Optional provenance string (e.g. session ID, document name).
     """
     try:
-        st = _require_state()
-        assert st.graph is not None  # noqa: S101
+        state = _require_state()
 
-        obs_objs = [
-            Observation(entity_id="placeholder", content=text, source=source)
-            for text in observations
-        ]
+        obs_objs = [Observation.pending(text, source=source) for text in observations]
 
-        results = await st.graph.add_observations(entity_name, obs_objs)
+        results = await state.graph.add_observations(entity_name, obs_objs)
         await _embed_observations(results)
 
         return {"results": results, "count": len(results)}
 
     except GraphRAGError as exc:
-        return _error_response(exc)
+        return _error_response(exc, tool_name="add_observations")
     except (ValueError, TypeError) as exc:
-        return _error_response(GraphRAGError(f"Invalid input: {exc}"))
+        return _error_response(GraphRAGError(f"Invalid input: {exc}"), tool_name="add_observations")
 
 
 @mcp.tool()
@@ -362,10 +409,9 @@ async def update_entity(
     Pass a new description to replace the current one. Pass entity_type to reclassify.
     """
     try:
-        st = _require_state()
-        assert st.graph is not None  # noqa: S101
+        state = _require_state()
 
-        updated = await st.graph.update_entity(
+        updated = await state.graph.update_entity(
             name,
             description=description,
             properties=properties,
@@ -376,12 +422,12 @@ async def update_entity(
         if description is not None:
             await _embed_entities([updated.id])
 
-        return updated.to_dict()
+        return {"result": updated.to_dict(), "status": "updated"}
 
     except GraphRAGError as exc:
-        return _error_response(exc)
+        return _error_response(exc, tool_name="update_entity")
     except (ValueError, TypeError) as exc:
-        return _error_response(GraphRAGError(f"Invalid input: {exc}"))
+        return _error_response(GraphRAGError(f"Invalid input: {exc}"), tool_name="update_entity")
 
 
 @mcp.tool()
@@ -392,32 +438,37 @@ async def delete_entities(names: list[str]) -> dict[str, Any]:
     Returns the count of entities actually deleted.
     """
     try:
-        st = _require_state()
-        assert st.graph is not None and st.embeddings is not None and st.db is not None  # noqa: S101
+        state = _require_state()
 
         # Resolve entity IDs before deletion for embedding cleanup
         entity_ids: list[str] = []
         for name in names:
             try:
-                entity = await st.graph.resolve_entity(name)
+                entity = await state.graph.resolve_entity(name)
                 entity_ids.append(entity.id)
             except EntityNotFoundError:
+                log.debug("Entity %r not found during deletion, skipping", name)
                 continue
 
-        deleted = await st.graph.delete_entities(names)
+        deleted = await state.graph.delete_entities(names)
 
         # Clean up embeddings for deleted entities
-        if st.embeddings.available:
+        if state.embeddings.available:
             for eid in entity_ids:
                 try:
-                    await st.embeddings.delete_entity_embedding(eid, st.db)
-                except GraphRAGError:
-                    pass
+                    await state.embeddings.delete_entity_embedding(eid, state.db)
+                except GraphRAGError as emb_exc:
+                    log.debug(
+                        "Failed to clean up embedding for entity %s: %s — "
+                        "orphaned embedding row may remain",
+                        eid,
+                        emb_exc,
+                    )
 
-        return {"deleted": deleted}
+        return {"results": names, "deleted": deleted, "count": deleted}
 
     except GraphRAGError as exc:
-        return _error_response(exc)
+        return _error_response(exc, tool_name="delete_entities")
 
 
 @mcp.tool()
@@ -432,29 +483,32 @@ async def merge_entities(
     entity is deleted after the merge.
     """
     try:
-        st = _require_state()
-        assert st.graph is not None and st.merger is not None  # noqa: S101
-        assert st.embeddings is not None and st.db is not None  # noqa: S101
+        state = _require_state()
 
-        target_entity = await st.graph.resolve_entity(target)
-        source_entity = await st.graph.resolve_entity(source)
+        target_entity = await state.graph.resolve_entity(target)
+        source_entity = await state.graph.resolve_entity(source)
 
-        result = await st.merger.merge(target_entity.id, source_entity.id)
+        result = await state.merger.merge(target_entity.id, source_entity.id)
 
         # Recompute target embedding (description may have changed)
         await _embed_entities([target_entity.id])
 
         # Clean up source embedding
-        if st.embeddings.available:
+        if state.embeddings.available:
             try:
-                await st.embeddings.delete_entity_embedding(source_entity.id, st.db)
-            except GraphRAGError:
-                pass
+                await state.embeddings.delete_entity_embedding(source_entity.id, state.db)
+            except GraphRAGError as emb_exc:
+                log.debug(
+                    "Failed to clean up embedding for merged entity %s: %s — "
+                    "orphaned embedding row may remain",
+                    source_entity.id,
+                    emb_exc,
+                )
 
-        return result
+        return {"result": result, "status": "merged"}
 
     except GraphRAGError as exc:
-        return _error_response(exc)
+        return _error_response(exc, tool_name="merge_entities")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -480,12 +534,14 @@ async def search_nodes(
         limit: Maximum results to return (default 10).
         entity_types: Optional filter to specific types (e.g. ['person', 'concept']).
         include_observations: Whether to include entity observations in results.
+
+    Raises:
+        GraphRAGError: If the search engine or database encounters an error.
     """
     try:
-        st = _require_state()
-        assert st.search is not None  # noqa: S101
+        state = _require_state()
 
-        results = await st.search.search_entities(
+        results = await state.search.search_entities(
             query,
             limit=limit,
             entity_types=entity_types,
@@ -495,7 +551,7 @@ async def search_nodes(
         return {"results": results, "count": len(results), "query": query}
 
     except GraphRAGError as exc:
-        return _error_response(exc)
+        return _error_response(exc, tool_name="search_nodes")
 
 
 @mcp.tool()
@@ -517,11 +573,10 @@ async def find_connections(
         direction: 'outgoing', 'incoming', or 'both' (default).
     """
     try:
-        st = _require_state()
-        assert st.graph is not None and st.traversal is not None  # noqa: S101
+        state = _require_state()
 
-        entity = await st.graph.resolve_entity(entity_name)
-        results = await st.traversal.find_connections(
+        entity = await state.graph.resolve_entity(entity_name)
+        results = await state.traversal.find_connections(
             entity.id,
             max_hops=max_hops,
             relationship_types=relationship_types,
@@ -535,7 +590,7 @@ async def find_connections(
         }
 
     except GraphRAGError as exc:
-        return _error_response(exc)
+        return _error_response(exc, tool_name="find_connections")
 
 
 @mcp.tool()
@@ -546,12 +601,11 @@ async def get_entity(name: str) -> dict[str, Any]:
     Returns the entity with all its observations and direct relationships.
     """
     try:
-        st = _require_state()
-        assert st.graph is not None  # noqa: S101
+        state = _require_state()
 
-        entity = await st.graph.get_entity(name)
-        observations = await st.graph.get_observations(name)
-        relationships = await st.graph.get_relationships(name)
+        entity = await state.graph.get_entity(name)
+        observations = await state.graph.get_observations(name)
+        relationships = await state.graph.get_relationships(name)
 
         result = entity.to_dict()
         result["observations"] = [obs.to_dict() for obs in observations]
@@ -560,7 +614,7 @@ async def get_entity(name: str) -> dict[str, Any]:
         return result
 
     except GraphRAGError as exc:
-        return _error_response(exc)
+        return _error_response(exc, tool_name="get_entity")
 
 
 @mcp.tool()
@@ -571,13 +625,12 @@ async def read_graph() -> dict[str, Any]:
     Takes no arguments. Useful for understanding the current state of the graph.
     """
     try:
-        st = _require_state()
-        assert st.graph is not None  # noqa: S101
+        state = _require_state()
 
-        return await st.graph.get_stats()
+        return await state.graph.get_stats()
 
     except GraphRAGError as exc:
-        return _error_response(exc)
+        return _error_response(exc, tool_name="read_graph")
 
 
 @mcp.tool()
@@ -596,19 +649,18 @@ async def get_subgraph(
         radius: How many hops to expand (1-5, default 2).
     """
     try:
-        st = _require_state()
-        assert st.graph is not None and st.traversal is not None  # noqa: S101
+        state = _require_state()
 
         entity_ids: list[str] = []
         for name in entity_names:
-            entity = await st.graph.resolve_entity(name)
+            entity = await state.graph.resolve_entity(name)
             entity_ids.append(entity.id)
 
-        result = await st.traversal.get_subgraph(entity_ids, radius=radius)
+        result = await state.traversal.get_subgraph(entity_ids, radius=radius)
         return result
 
     except GraphRAGError as exc:
-        return _error_response(exc)
+        return _error_response(exc, tool_name="get_subgraph")
 
 
 @mcp.tool()
@@ -628,13 +680,12 @@ async def find_paths(
         max_hops: Maximum path length to consider (1-10, default 5).
     """
     try:
-        st = _require_state()
-        assert st.graph is not None and st.traversal is not None  # noqa: S101
+        state = _require_state()
 
-        source_entity = await st.graph.resolve_entity(source)
-        target_entity = await st.graph.resolve_entity(target)
+        source_entity = await state.graph.resolve_entity(source)
+        target_entity = await state.graph.resolve_entity(target)
 
-        paths = await st.traversal.find_paths(
+        paths = await state.traversal.find_paths(
             source_entity.id,
             target_entity.id,
             max_hops=max_hops,
@@ -648,7 +699,7 @@ async def find_paths(
         }
 
     except GraphRAGError as exc:
-        return _error_response(exc)
+        return _error_response(exc, tool_name="find_paths")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -670,7 +721,7 @@ def create_server(config: Config | None = None) -> FastMCP:
 
 def run(
     transport: str = "stdio",
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",  # noqa: S104 — bind to localhost by default for security
     port: int = 8080,
 ) -> None:
     """Start the MCP server.
@@ -678,10 +729,17 @@ def run(
     Args:
         transport: ``"stdio"`` (default) for CLI usage,
                    ``"sse"`` or ``"streamable-http"`` for network usage.
-        host: Bind address for network transports.
+        host: Bind address for network transports (default ``127.0.0.1``).
         port: Port for network transports.
     """
     if transport == "stdio":
         mcp.run(transport="stdio")
     else:
+        log.warning(
+            "Running with %s transport on %s:%d — no authentication is configured. "
+            "Consider binding to 127.0.0.1 for local-only access.",
+            transport,
+            host,
+            port,
+        )
         mcp.run(transport=transport, host=host, port=port)

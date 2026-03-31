@@ -12,6 +12,12 @@ from dataclasses import dataclass, field
 
 from graphrag_mcp.utils.ids import generate_id
 
+# Sentinel value used when creating Observation objects before the real
+# entity ID is known (e.g. during bulk add_entities where the entity
+# hasn't been persisted yet).  The graph engine replaces this with the
+# actual entity ID when it attaches the observation.
+PENDING_ENTITY_ID = "placeholder"
+
 
 @dataclass(slots=True)
 class Observation:
@@ -37,6 +43,15 @@ class Observation:
             raise ValueError("Observation entity_id must not be empty.")
         if not self.content:
             raise ValueError("Observation content must not be empty.")
+
+    @classmethod
+    def pending(cls, content: str, source: str = "") -> Observation:
+        """Create an observation pending entity assignment.
+
+        Uses :data:`PENDING_ENTITY_ID` as a placeholder; the graph engine
+        will overwrite it with the real entity ID when persisting.
+        """
+        return cls(entity_id=PENDING_ENTITY_ID, content=content, source=source)
 
     @classmethod
     def from_row(cls, row: dict[str, object]) -> Observation:

@@ -6,7 +6,6 @@ Graph structures are built from scratch per test for full isolation.
 
 from __future__ import annotations
 
-import pytest
 import pytest_asyncio
 from pathlib import Path
 

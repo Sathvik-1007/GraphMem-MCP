@@ -14,12 +14,10 @@ from graphrag_mcp.utils.errors import ConfigError
 
 
 def _env(key: str, default: str) -> str:
-    """Read an environment variable with a fallback."""
     return os.environ.get(key, default)
 
 
 def _env_bool(key: str, default: bool) -> bool:
-    """Read a boolean environment variable."""
     raw = os.environ.get(key)
     if raw is None:
         return default
@@ -27,7 +25,6 @@ def _env_bool(key: str, default: bool) -> bool:
 
 
 def _env_int(key: str, default: int) -> int:
-    """Read an integer environment variable."""
     raw = os.environ.get(key)
     if raw is None:
         return default
@@ -103,5 +100,4 @@ class Config:
 
 
 def load_config() -> Config:
-    """Create a Config instance from current environment variables."""
     return Config()

@@ -58,12 +58,10 @@ class Entity:
 
     @property
     def properties_json(self) -> str:
-        """Serialize properties to JSON string for SQLite storage."""
         return json.dumps(self.properties, ensure_ascii=False, default=str)
 
     @classmethod
     def from_row(cls, row: dict[str, object]) -> Entity:
-        """Reconstruct an Entity from a SQLite row dict."""
         props_raw = row.get("properties")
         props = json.loads(props_raw) if isinstance(props_raw, str) else {}
         return cls(
@@ -77,7 +75,6 @@ class Entity:
         )
 
     def to_dict(self) -> dict[str, object]:
-        """Serialize to a plain dict for MCP tool responses."""
         return {
             "id": self.id,
             "name": self.name,

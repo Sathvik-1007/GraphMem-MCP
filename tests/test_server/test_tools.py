@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import pytest_asyncio
 
 import graphrag_mcp.server as server_mod
@@ -236,8 +235,9 @@ async def test_update_entity_description(setup_server):
 
     result = await update_entity(name="Alice", description="Updated bio")
     _assert_no_error(result)
-    assert result["description"] == "Updated bio"
-    assert result["name"] == "Alice"
+    assert result["result"]["description"] == "Updated bio"
+    assert result["result"]["name"] == "Alice"
+    assert result["status"] == "updated"
 
 
 async def test_update_entity_not_found(setup_server):
@@ -290,8 +290,9 @@ async def test_merge_entities_basic(setup_server):
 
     result = await merge_entities(target="Alice", source="Alice Duplicate")
     _assert_no_error(result)
-    assert result["target_name"] == "Alice"
-    assert result["source_name"] == "Alice Duplicate"
+    assert result["result"]["target_name"] == "Alice"
+    assert result["result"]["source_name"] == "Alice Duplicate"
+    assert result["status"] == "merged"
 
     # Source should no longer exist
     gone = await get_entity(name="Alice Duplicate")
