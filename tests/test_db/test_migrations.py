@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import time
-
-import pytest_asyncio
 from pathlib import Path
 
-from graphrag_mcp.db.connection import Database
-from graphrag_mcp.db.schema import run_migrations, get_current_version
+import pytest_asyncio
 
+from graphrag_mcp.db.connection import Database
+from graphrag_mcp.db.schema import get_current_version, run_migrations
 
 # ---------------------------------------------------------------------------
 # Fixtures

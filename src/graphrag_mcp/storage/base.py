@@ -18,8 +18,9 @@ Design choices:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator
+from typing import Any
 
 
 class StorageBackend(ABC):

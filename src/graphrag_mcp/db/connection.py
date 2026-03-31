@@ -8,9 +8,10 @@ workloads: WAL journal, large page cache, memory-mapped I/O.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any
 
 import aiosqlite
 

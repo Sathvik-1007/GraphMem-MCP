@@ -5,10 +5,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org)
 
-```bash
-uvx graphrag-mcp install claude  # or opencode, codex, gemini, cursor, windsurf, amp
-```
-
 ---
 
 ## What is this?
@@ -19,15 +15,43 @@ LLM-powered coding agents forget everything between sessions. They re-read files
 
 Vector search finds _similar_ things. Graphs find _connected_ things. When an agent asks "what depends on the auth service?", a vector store returns text that mentions auth. A knowledge graph traverses the actual dependency edges and returns every upstream consumer — even ones that never mention "auth" in their description. graphrag-mcp gives you both: vector similarity for fuzzy discovery, graph traversal for structural queries.
 
-## Quick Start
+## Installation
 
-**Install the package:**
+### Option 1: uvx (Recommended — zero pre-install)
+
+```bash
+uvx graphrag-mcp server
+```
+
+`uvx` downloads the package into an isolated environment and runs it in one command. Nothing to pre-install beyond [uv](https://docs.astral.sh/uv/).
+
+### Option 2: pip
 
 ```bash
 pip install graphrag-mcp
+graphrag-mcp server
 ```
 
-**Install the skill for your agent:**
+### Option 3: From source
+
+```bash
+git clone https://github.com/sathvik/graphrag-mcp
+cd graphrag-mcp
+pip install -e ".[full,dev]"
+graphrag-mcp server
+```
+
+### Optional extras
+
+```bash
+pip install "graphrag-mcp[embeddings]"   # sentence-transformers for local embeddings
+pip install "graphrag-mcp[onnx]"         # ONNX runtime for ~3x faster inference
+pip install "graphrag-mcp[full]"         # both of the above
+```
+
+## Quick Start
+
+**1. Install the skill for your agent:**
 
 ```bash
 graphrag-mcp install claude        # Claude Code
@@ -39,7 +63,7 @@ graphrag-mcp install windsurf      # Windsurf
 graphrag-mcp install amp           # Amp
 ```
 
-**Or configure MCP manually** by adding this to your agent's MCP config:
+**2. Or configure MCP manually** by adding this to your agent's MCP config:
 
 ```json
 {
@@ -47,6 +71,19 @@ graphrag-mcp install amp           # Amp
     "graphrag-mcp": {
       "command": "uvx",
       "args": ["graphrag-mcp", "server"]
+    }
+  }
+}
+```
+
+If you installed via pip instead of uvx, use:
+
+```json
+{
+  "mcpServers": {
+    "graphrag-mcp": {
+      "command": "graphrag-mcp",
+      "args": ["server"]
     }
   }
 }
@@ -90,7 +127,7 @@ Agent (Claude/Codex/Gemini/OpenCode)
 graphrag-mcp server
   |-- Graph Engine ---- entity/relationship/observation CRUD
   |-- Semantic Engine -- sentence-transformers embeddings + hybrid search
-  '-- Storage --------- SQLite + sqlite-vec (.graphrag/graph.db)
+  '-- Storage --------- pluggable backend (SQLite default, .graphrag/graph.db)
 ```
 
 Everything lives in a single SQLite database per project. No external services, no Docker containers, no API keys. The server communicates over MCP's standard stdio transport (SSE also supported) and stores all data in `.graphrag/graph.db` at your project root.
@@ -164,6 +201,7 @@ All settings are optional. Defaults work out of the box.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `GRAPHRAG_BACKEND_TYPE` | `sqlite` | Storage backend (`sqlite` by default) |
 | `GRAPHRAG_DB_PATH` | `.graphrag/graph.db` | Database file path |
 | `GRAPHRAG_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | sentence-transformers model name |
 | `GRAPHRAG_USE_ONNX` | `true` | Use ONNX runtime if available |
@@ -187,31 +225,70 @@ graphrag-mcp is optimized for low-latency, single-user workloads typical of CLI 
 
 ## Development
 
+### Setup
+
 ```bash
-git clone https://github.com/graphrag-mcp/graphrag-mcp
+git clone https://github.com/sathvik/graphrag-mcp
 cd graphrag-mcp
-pip install -e ".[dev]"
-pytest
+
+# Using uv (recommended)
+uv venv
+uv pip install -e ".[full,dev]"
+
+# Or using pip
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[full,dev]"
 ```
 
 ### Running Tests
 
 ```bash
-pytest                       # all tests
-pytest tests/unit            # unit tests only
-pytest tests/integration     # integration tests only
-pytest -x -q                 # stop on first failure, quiet output
+pytest                            # all tests
+pytest tests/test_graph/          # graph engine tests
+pytest tests/test_server/         # MCP server tool tests
+pytest tests/test_cli/            # CLI command tests
+pytest tests/test_models/         # data model tests
+pytest tests/test_semantic/       # search + vector tests
+pytest tests/test_storage/        # storage backend tests
+pytest tests/test_db/             # database + migration tests
+pytest tests/test_utils/          # config, logging, ID generation tests
+pytest -x -q                      # stop on first failure, quiet output
 ```
 
 ### Project Structure
 
 ```
 src/graphrag_mcp/
-  server.py          # MCP server entry point and tool definitions
-  graph_engine.py    # Entity, relationship, observation CRUD
-  semantic.py        # Embedding generation and hybrid search
-  storage.py         # SQLite schema, migrations, query execution
-  cli.py             # CLI commands (install, status, export, etc.)
+  __init__.py              # package version
+  __main__.py              # python -m graphrag_mcp support
+  server.py                # MCP server entry point and 12 tool definitions
+  cli/
+    main.py                # Click CLI: server, init, status, export, import, validate
+    install.py             # Skill installer for 7 agent types
+  db/
+    connection.py          # Database class (aiosqlite, WAL, PRAGMA tuning)
+    schema.py              # Migration runner + version tracking
+    migrations/            # Versioned SQL migration scripts
+  graph/
+    engine.py              # GraphEngine — entity/relationship/observation CRUD
+    traversal.py           # GraphTraversal — BFS, path-finding, subgraph extraction
+    merge.py               # EntityMerger — entity deduplication and merging
+  models/
+    entity.py              # Entity dataclass
+    relationship.py        # Relationship dataclass
+    observation.py         # Observation dataclass
+  semantic/
+    embeddings.py          # EmbeddingEngine — lazy loading, ONNX, content-hash cache
+    search.py              # HybridSearch — vector + FTS5 + RRF fusion
+  storage/
+    base.py                # StorageBackend ABC (~37 abstract methods)
+    sqlite_backend.py      # SQLiteBackend — reference implementation
+  utils/
+    config.py              # Environment-variable-based Config dataclass
+    errors.py              # 14-class exception hierarchy
+    ids.py                 # ULID generation
+    logging.py             # Structured logging setup
 ```
 
 ## License

@@ -6,9 +6,10 @@ Each test uses a fresh temporary SQLite database with migrations applied.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import pytest_asyncio
-from pathlib import Path
 
 from graphrag_mcp.graph.engine import GraphEngine
 from graphrag_mcp.models.entity import Entity
@@ -16,7 +17,6 @@ from graphrag_mcp.models.observation import Observation
 from graphrag_mcp.models.relationship import Relationship
 from graphrag_mcp.storage import SQLiteBackend
 from graphrag_mcp.utils.errors import EntityNotFoundError
-
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 

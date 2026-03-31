@@ -12,9 +12,10 @@ to instantiate the configured backend (SQLite, Neo4j, Memgraph, etc.).
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -728,7 +729,7 @@ def create_server(config: Config | None = None) -> FastMCP:
 
 def run(
     transport: str = "stdio",
-    host: str = "127.0.0.1",  # noqa: S104 — bind to localhost by default for security
+    host: str = "127.0.0.1",
     port: int = 8080,
 ) -> None:
     """Start the MCP server.

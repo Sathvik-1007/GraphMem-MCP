@@ -6,15 +6,15 @@ Graph structures are built from scratch per test for full isolation.
 
 from __future__ import annotations
 
-import pytest_asyncio
 from pathlib import Path
+
+import pytest_asyncio
 
 from graphrag_mcp.graph.engine import GraphEngine
 from graphrag_mcp.graph.traversal import GraphTraversal
 from graphrag_mcp.models.entity import Entity
 from graphrag_mcp.models.relationship import Relationship
 from graphrag_mcp.storage import SQLiteBackend
-
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 

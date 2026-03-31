@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any
 
 from graphrag_mcp.db.connection import Database
 from graphrag_mcp.db.schema import run_migrations
@@ -155,7 +156,7 @@ class SQLiteBackend(StorageBackend):
             return
         set_clauses = [f"{col} = ?" for col in updates]
         params = list(updates.values()) + [entity_id]
-        sql = f"UPDATE entities SET {', '.join(set_clauses)} WHERE id = ?"  # noqa: S608
+        sql = f"UPDATE entities SET {', '.join(set_clauses)} WHERE id = ?"
         await self._require_db().execute(sql, tuple(params))
 
     async def delete_entity(self, entity_id: str) -> None:
@@ -311,7 +312,7 @@ class SQLiteBackend(StorageBackend):
         if column not in ("source_id", "target_id"):
             raise DatabaseError(f"Invalid column for relationship lookup: {column!r}")
         return await self._require_db().fetch_all(
-            f"SELECT * FROM relationships WHERE {column} = ?",  # noqa: S608
+            f"SELECT * FROM relationships WHERE {column} = ?",
             (entity_id,),
         )
 
@@ -320,7 +321,7 @@ class SQLiteBackend(StorageBackend):
             return
         set_clauses = [f"{col} = ?" for col in updates]
         params = list(updates.values()) + [rel_id]
-        sql = f"UPDATE relationships SET {', '.join(set_clauses)} WHERE id = ?"  # noqa: S608
+        sql = f"UPDATE relationships SET {', '.join(set_clauses)} WHERE id = ?"
         await self._require_db().execute(sql, tuple(params))
 
     async def delete_relationship_by_id(self, rel_id: str) -> None:
@@ -553,7 +554,7 @@ class SQLiteBackend(StorageBackend):
             return []
         placeholders = ",".join("?" for _ in entity_ids)
         return await self._require_db().fetch_all(
-            f"SELECT * FROM entities WHERE id IN ({placeholders})",  # noqa: S608
+            f"SELECT * FROM entities WHERE id IN ({placeholders})",
             tuple(entity_ids),
         )
 
@@ -562,7 +563,7 @@ class SQLiteBackend(StorageBackend):
             return []
         placeholders = ",".join("?" for _ in entity_ids)
         return await self._require_db().fetch_all(
-            f"SELECT * FROM relationships "  # noqa: S608
+            f"SELECT * FROM relationships "
             f"WHERE source_id IN ({placeholders}) AND target_id IN ({placeholders})",
             tuple(entity_ids) + tuple(entity_ids),
         )
@@ -572,7 +573,7 @@ class SQLiteBackend(StorageBackend):
             return {}
         placeholders = ",".join("?" for _ in entity_ids)
         rows = await self._require_db().fetch_all(
-            f"SELECT id, name FROM entities WHERE id IN ({placeholders})",  # noqa: S608
+            f"SELECT id, name FROM entities WHERE id IN ({placeholders})",
             tuple(entity_ids),
         )
         return {str(r["id"]): str(r["name"]) for r in rows}

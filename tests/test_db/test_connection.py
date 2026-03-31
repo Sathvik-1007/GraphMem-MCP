@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import pytest_asyncio
-from pathlib import Path
 
 from graphrag_mcp.db.connection import Database
 from graphrag_mcp.utils.errors import DatabaseError
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

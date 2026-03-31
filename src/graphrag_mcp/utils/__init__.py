@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from graphrag_mcp.utils.config import Config, ConfigError, load_config
+from graphrag_mcp.utils.config import Config, load_config
 from graphrag_mcp.utils.errors import (
+    ConfigError,
     DatabaseError,
     DimensionMismatchError,
     DuplicateEntityError,

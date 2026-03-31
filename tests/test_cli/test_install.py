@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
 
+import pytest
+
 from graphrag_mcp.cli.install import (
+    _SECTION_BEGIN,
+    _SECTION_END,
     SUPPORTED_AGENTS,
     install_skill,
     uninstall_skill,
-    _SECTION_BEGIN,
-    _SECTION_END,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

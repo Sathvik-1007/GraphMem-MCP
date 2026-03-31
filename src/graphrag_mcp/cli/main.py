@@ -29,7 +29,29 @@ def _run_async(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-async def _open_db(db_path: str | None = None) -> tuple[Any, Any]:
+def _resolve_db_path(
+    db_path: str | None = None,
+    project_dir: str | None = None,
+) -> None:
+    """Set GRAPHRAG_DB_PATH from explicit flags.
+
+    Priority (highest wins):
+    1. ``--db`` — explicit database file path
+    2. ``--project-dir`` — resolve ``<dir>/.graphrag/graph.db``
+    3. ``GRAPHRAG_DB_PATH`` environment variable (left untouched)
+    4. Config default: ``.graphrag/graph.db`` relative to CWD
+    """
+    if db_path:
+        os.environ["GRAPHRAG_DB_PATH"] = str(Path(db_path).resolve())
+    elif project_dir:
+        resolved = Path(project_dir).resolve() / ".graphrag" / "graph.db"
+        os.environ["GRAPHRAG_DB_PATH"] = str(resolved)
+
+
+async def _open_db(
+    db_path: str | None = None,
+    project_dir: str | None = None,
+) -> tuple[Any, Any]:
     """Open storage backend and return (StorageBackend, GraphEngine) for CLI commands.
 
     Lazily imports heavy modules so that lightweight commands (like
@@ -40,8 +62,7 @@ async def _open_db(db_path: str | None = None) -> tuple[Any, Any]:
     from graphrag_mcp.graph import GraphEngine
     from graphrag_mcp.storage import create_backend
 
-    if db_path:
-        os.environ["GRAPHRAG_DB_PATH"] = db_path
+    _resolve_db_path(db_path, project_dir)
 
     config = load_config()
     storage = create_backend(config.backend_type, db_path=config.ensure_db_dir())
@@ -82,6 +103,13 @@ def cli() -> None:
     help="Path to the SQLite database file.",
 )
 @click.option(
+    "--project-dir",
+    "project_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Project root directory. Database stored at <dir>/.graphrag/graph.db.",
+)
+@click.option(
     "--host",
     default="127.0.0.1",
     show_default=True,
@@ -94,13 +122,18 @@ def cli() -> None:
     show_default=True,
     help="Port for SSE / HTTP transports.",
 )
-def server(transport: str, db_path: str | None, host: str, port: int) -> None:
+def server(
+    transport: str,
+    db_path: str | None,
+    project_dir: str | None,
+    host: str,
+    port: int,
+) -> None:
     """Start the MCP server."""
     try:
         # Propagate CLI options into environment so that Config picks them up.
         os.environ["GRAPHRAG_TRANSPORT"] = transport
-        if db_path:
-            os.environ["GRAPHRAG_DB_PATH"] = db_path
+        _resolve_db_path(db_path, project_dir)
 
         from graphrag_mcp.server import run  # lazy import — heavy deps
 
@@ -131,7 +164,14 @@ _SUPPORTED_AGENTS = ("claude", "opencode", "codex", "gemini", "cursor", "windsur
     default=True,
     help="Install the skill for the current project (default).",
 )
-def install(agent: str, scope: str) -> None:
+@click.option(
+    "--project-dir",
+    "project_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Project root directory for skill installation.",
+)
+def install(agent: str, scope: str, project_dir: str | None) -> None:
     """Install agent skill configuration for AGENT.
 
     Writes the appropriate MCP configuration file so that the
@@ -140,7 +180,8 @@ def install(agent: str, scope: str) -> None:
     try:
         from graphrag_mcp.cli.install import install_skill  # lazy import
 
-        result_path: str = install_skill(agent=agent, scope=scope)
+        pd = Path(project_dir) if project_dir else None
+        result_path: Path = install_skill(agent=agent, scope=scope, project_dir=pd)
         click.secho(f"Installed {agent} skill ({scope}):", fg="green")
         click.echo(f"  {result_path}")
     except GraphRAGError as exc:
@@ -160,29 +201,33 @@ def install(agent: str, scope: str) -> None:
     type=click.Path(),
     help="Custom database path (default: .graphrag/graph.db).",
 )
-def init(db_path: str | None) -> None:
+@click.option(
+    "--project-dir",
+    "project_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Project root directory. Database stored at <dir>/.graphrag/graph.db.",
+)
+def init(db_path: str | None, project_dir: str | None) -> None:
     """Initialize a .graphrag directory and database."""
 
     async def _init() -> None:
-        from graphrag_mcp.db import Database, get_current_version, run_migrations
+        from graphrag_mcp.storage import create_backend
 
-        if db_path:
-            os.environ["GRAPHRAG_DB_PATH"] = db_path
+        _resolve_db_path(db_path, project_dir)
 
         config = load_config()
         resolved = config.ensure_db_dir()
 
-        db = Database(resolved)
-        await db.initialize()
-        applied = await run_migrations(db)
-        version = await get_current_version(db)
-        await db.close()
+        storage = create_backend(config.backend_type, db_path=resolved)
+        await storage.initialize()
+        version = await storage.get_schema_version()
+        await storage.close()
 
         click.secho("Initialized graphrag-mcp database.", fg="green")
         click.echo(f"  Database: {resolved}")
+        click.echo(f"  Backend: {config.backend_type}")
         click.echo(f"  Schema version: {version}")
-        if applied:
-            click.echo(f"  Migrations applied: {applied}")
 
     try:
         _run_async(_init())
@@ -204,23 +249,30 @@ def init(db_path: str | None) -> None:
     help="Path to the SQLite database file.",
 )
 @click.option(
+    "--project-dir",
+    "project_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Project root directory containing .graphrag/graph.db.",
+)
+@click.option(
     "--json",
     "as_json",
     is_flag=True,
     default=False,
     help="Output raw JSON instead of formatted text.",
 )
-def status(db_path: str | None, as_json: bool) -> None:
+def status(db_path: str | None, project_dir: str | None, as_json: bool) -> None:
     """Show graph statistics."""
 
     async def _status() -> dict[str, Any]:
-        db, graph = await _open_db(db_path)
+        storage, graph = await _open_db(db_path, project_dir)
         try:
             stats = await graph.get_stats()
-            stats["schema_version"] = await db.get_schema_version()
+            stats["schema_version"] = await storage.get_schema_version()
             return stats
         finally:
-            await db.close()
+            await storage.close()
 
     try:
         stats = _run_async(_status())
@@ -267,6 +319,13 @@ def status(db_path: str | None, as_json: bool) -> None:
     help="Path to the SQLite database file.",
 )
 @click.option(
+    "--project-dir",
+    "project_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Project root directory containing .graphrag/graph.db.",
+)
+@click.option(
     "--format",
     "fmt",
     default="json",
@@ -281,11 +340,16 @@ def status(db_path: str | None, as_json: bool) -> None:
     type=click.Path(),
     help="Output file path (defaults to stdout).",
 )
-def export(db_path: str | None, fmt: str, output_path: str | None) -> None:
+def export(
+    db_path: str | None,
+    project_dir: str | None,
+    fmt: str,
+    output_path: str | None,
+) -> None:
     """Export all graph data."""
 
     async def _export() -> dict[str, Any]:
-        db, graph = await _open_db(db_path)
+        storage, graph = await _open_db(db_path, project_dir)
         try:
             entities = await graph.list_entities(limit=1_000_000)
             all_relationships: list[dict[str, Any]] = []
@@ -324,7 +388,7 @@ def export(db_path: str | None, fmt: str, output_path: str | None) -> None:
                 "skipped": skipped,
             }
         finally:
-            await db.close()
+            await storage.close()
 
     try:
         data = _run_async(_export())
@@ -373,7 +437,14 @@ def export(db_path: str | None, fmt: str, output_path: str | None) -> None:
     type=click.Path(),
     help="Path to the SQLite database file.",
 )
-def import_data(input_file: str, db_path: str | None) -> None:
+@click.option(
+    "--project-dir",
+    "project_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Project root directory. Database stored at <dir>/.graphrag/graph.db.",
+)
+def import_data(input_file: str, db_path: str | None, project_dir: str | None) -> None:
     """Import graph data from a JSON file."""
 
     async def _import() -> dict[str, int]:
@@ -385,12 +456,14 @@ def import_data(input_file: str, db_path: str | None) -> None:
         except json.JSONDecodeError as exc:
             raise GraphRAGError(f"Invalid JSON in {input_file}: {exc}") from exc
 
-        db, graph = await _open_db(db_path)
+        storage, graph = await _open_db(db_path, project_dir)
         try:
             counts: dict[str, int] = {"entities": 0, "relationships": 0, "observations": 0}
 
             # Import entities
             raw_entities: list[dict[str, Any]] = data.get("entities", [])
+            # Build a mapping from old entity IDs to new entity IDs
+            old_to_new_id: dict[str, str] = {}
             if raw_entities:
                 entities = [
                     Entity(
@@ -404,28 +477,54 @@ def import_data(input_file: str, db_path: str | None) -> None:
                 results = await graph.add_entities(entities)
                 counts["entities"] = len(results)
 
+                # Map old exported IDs → newly created IDs
+                for raw_ent, result in zip(raw_entities, results):
+                    old_id = str(raw_ent.get("id", ""))
+                    new_id = str(result["id"])
+                    if old_id:
+                        old_to_new_id[old_id] = new_id
+
             # Import relationships
             raw_rels: list[dict[str, Any]] = data.get("relationships", [])
             if raw_rels:
-                relationships = [
-                    Relationship(
-                        source_id=str(r["source_id"]),
-                        target_id=str(r["target_id"]),
-                        relationship_type=str(r["relationship_type"]),
-                        weight=float(r.get("weight", 1.0)),
-                        properties=r.get("properties", {}),
+                relationships: list[Relationship] = []
+                skipped_rels: list[str] = []
+                for r in raw_rels:
+                    old_source = str(r["source_id"])
+                    old_target = str(r["target_id"])
+                    new_source = old_to_new_id.get(old_source)
+                    new_target = old_to_new_id.get(old_target)
+                    if not new_source or not new_target:
+                        skipped_rels.append(
+                            f"{old_source}->{old_target}:{r.get('relationship_type', '?')}"
+                        )
+                        continue
+                    relationships.append(
+                        Relationship(
+                            source_id=new_source,
+                            target_id=new_target,
+                            relationship_type=str(r["relationship_type"]),
+                            weight=float(r.get("weight", 1.0)),
+                            properties=r.get("properties", {}),
+                        )
                     )
-                    for r in raw_rels
-                ]
-                results = await graph.add_relationships(relationships)
-                counts["relationships"] = len(results)
+                if relationships:
+                    results = await graph.add_relationships(relationships)
+                    counts["relationships"] = len(results)
+                if skipped_rels:
+                    log.warning(
+                        "Import: skipped %d relationship(s) with unmapped entity IDs: %s",
+                        len(skipped_rels),
+                        ", ".join(skipped_rels[:5]),
+                    )
+                    counts["skipped_relationships"] = len(skipped_rels)
 
             # Import observations
             raw_obs: list[dict[str, Any]] = data.get("observations", [])
             if raw_obs:
                 # Group observations by entity_id — we need the entity name for
                 # add_observations, but the export format stores entity_id.
-                # Build a mapping from entity id -> entity name from imported entities.
+                # Build a mapping from old entity id -> entity name from imported entities.
                 entity_id_to_name: dict[str, str] = {}
                 for e in raw_entities:
                     eid = str(e.get("id", ""))
@@ -460,7 +559,7 @@ def import_data(input_file: str, db_path: str | None) -> None:
 
             return counts
         finally:
-            await db.close()
+            await storage.close()
 
     try:
         counts = _run_async(_import())
@@ -472,6 +571,12 @@ def import_data(input_file: str, db_path: str | None) -> None:
     click.echo(f"  Entities:      {counts['entities']}")
     click.echo(f"  Relationships: {counts['relationships']}")
     click.echo(f"  Observations:  {counts['observations']}")
+    skipped_rel_count = counts.get("skipped_relationships", 0)
+    if skipped_rel_count:
+        click.secho(
+            f"  Skipped:       {skipped_rel_count} relationship(s) with unmapped entity IDs",
+            fg="yellow",
+        )
     skipped_count = counts.get("skipped_observations", 0)
     if skipped_count:
         click.secho(f"  Skipped:       {skipped_count} observation group(s) failed", fg="yellow")
@@ -488,26 +593,33 @@ def import_data(input_file: str, db_path: str | None) -> None:
     type=click.Path(exists=True),
     help="Path to the SQLite database file.",
 )
-def validate(db_path: str | None) -> None:
+@click.option(
+    "--project-dir",
+    "project_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Project root directory containing .graphrag/graph.db.",
+)
+def validate(db_path: str | None, project_dir: str | None) -> None:
     """Validate database integrity."""
 
     async def _validate() -> list[str]:
-        db, _graph = await _open_db(db_path)
+        storage, _graph = await _open_db(db_path, project_dir)
         issues: list[str] = []
         try:
             # 1. SQLite integrity check
-            result = await db.fetch_one("PRAGMA integrity_check")
+            result = await storage.fetch_one("PRAGMA integrity_check")
             integrity = str(result["integrity_check"]) if result else "unknown"
             if integrity != "ok":
                 issues.append(f"SQLite integrity check failed: {integrity}")
 
             # 2. Schema version
-            version = await db.get_schema_version()
+            version = await storage.get_schema_version()
             if version == 0:
                 issues.append("No migrations have been applied (schema version 0).")
 
             # 3. Orphaned relationships — source or target entity missing
-            orphaned_rels = await db.fetch_all(
+            orphaned_rels = await storage.fetch_all(
                 "SELECT r.id, r.source_id, r.target_id FROM relationships r "
                 "LEFT JOIN entities s ON s.id = r.source_id "
                 "LEFT JOIN entities t ON t.id = r.target_id "
@@ -520,7 +632,7 @@ def validate(db_path: str | None) -> None:
                 )
 
             # 4. Orphaned observations — entity missing
-            orphaned_obs = await db.fetch_all(
+            orphaned_obs = await storage.fetch_all(
                 "SELECT o.id FROM observations o "
                 "LEFT JOIN entities e ON e.id = o.entity_id "
                 "WHERE e.id IS NULL"
@@ -541,7 +653,7 @@ def validate(db_path: str | None) -> None:
 
             return issues
         finally:
-            await db.close()
+            await storage.close()
 
     try:
         issues = _run_async(_validate())
