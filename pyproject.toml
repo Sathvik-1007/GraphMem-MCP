@@ -50,10 +50,10 @@ dev = [
 graphrag-mcp = "graphrag_mcp.cli.main:cli"
 
 [project.urls]
-Homepage = "https://github.com/sathvik/graphrag-mcp"
-Documentation = "https://github.com/sathvik/graphrag-mcp#readme"
-Repository = "https://github.com/sathvik/graphrag-mcp"
-Issues = "https://github.com/sathvik/graphrag-mcp/issues"
+Homepage = "https://github.com/Sathvik-1007/graphrag-mcp"
+Documentation = "https://github.com/Sathvik-1007/graphrag-mcp#readme"
+Repository = "https://github.com/Sathvik-1007/graphrag-mcp"
+Issues = "https://github.com/Sathvik-1007/graphrag-mcp/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/graphrag_mcp"]

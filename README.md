@@ -35,7 +35,7 @@ graphrag-mcp server
 ### Option 3: From source
 
 ```bash
-git clone https://github.com/sathvik/graphrag-mcp
+git clone https://github.com/Sathvik-1007/graphrag-mcp
 cd graphrag-mcp
 pip install -e ".[full,dev]"
 graphrag-mcp server
@@ -228,7 +228,7 @@ graphrag-mcp is optimized for low-latency, single-user workloads typical of CLI 
 ### Setup
 
 ```bash
-git clone https://github.com/sathvik/graphrag-mcp
+git clone https://github.com/Sathvik-1007/graphrag-mcp
 cd graphrag-mcp
 
 # Using uv (recommended)
