@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "graphrag-mcp"
+version = "0.1.0"
+description = "Production-grade Graph-RAG MCP server with local embeddings — persistent knowledge graphs for any LLM-powered CLI agent"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "graphrag-mcp contributors" },
+]
+keywords = ["mcp", "graph-rag", "knowledge-graph", "embeddings", "sqlite", "llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "mcp>=1.0",
+    "sqlite-vec>=0.1.6",
+    "sentence-transformers>=2.0",
+    "click>=8.0",
+    "python-ulid>=3.0.0",
+    "aiosqlite>=0.20.0",
+]
+
+[project.optional-dependencies]
+onnx = ["onnxruntime>=1.15"]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "coverage>=7.0",
+]
+
+[project.scripts]
+graphrag-mcp = "graphrag_mcp.cli.main:cli"
+
+[project.urls]
+Homepage = "https://github.com/graphrag-mcp/graphrag-mcp"
+Documentation = "https://github.com/graphrag-mcp/graphrag-mcp#readme"
+Repository = "https://github.com/graphrag-mcp/graphrag-mcp"
+Issues = "https://github.com/graphrag-mcp/graphrag-mcp/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/graphrag_mcp"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TCH", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["graphrag_mcp"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
