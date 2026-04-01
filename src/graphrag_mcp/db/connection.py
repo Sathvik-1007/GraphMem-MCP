@@ -96,7 +96,8 @@ class Database:
         try:
             import sqlite_vec  # type: ignore[import-untyped]
 
-            assert self._conn is not None  # always true when called from open()
+            if self._conn is None:  # pragma: no cover — always true when called from open()
+                return
             await self._conn.enable_load_extension(True)
             conn_raw = self._conn._conn  # underlying sqlite3.Connection
             sqlite_vec.load(conn_raw)

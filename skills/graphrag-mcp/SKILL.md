@@ -18,6 +18,20 @@ It is NOT working memory (your context window handles that) or procedural memory
 training and skills handle that). It is long-term structured memory that persists across
 sessions.
 
+## Core Principle: Use It Continuously
+
+**The graph is only useful if you maintain it.** Don't treat it as a write-once archive.
+Treat it as a living document that you read from at the start of every session and write
+to throughout your work. The ouroboros pattern: the tool documents the work, and the work
+maintains the tool.
+
+Every session should follow this loop:
+1. **Recall** — Search the graph for context before starting work
+2. **Work + Record** — Store decisions, discoveries, and facts as you go
+3. **Persist** — Sweep for anything you missed before ending the session
+
+If you skip steps 2 and 3, the graph becomes stale and step 1 becomes useless.
+
 ## The Three Primitives
 
 **Entity** — A named concept with a type and description. The node in the graph.
@@ -57,11 +71,13 @@ sessions.
 - Make or discover an architectural decision
 - Encounter a person, system, or important artifact
 - Complete a task with lessons worth remembering
+- Encounter a bug, its root cause, and fix
 
 **Retrieve** when you:
 - Start a new task or session (warm-start with context)
 - Need to make a decision (check for prior decisions and context)
 - Encounter something that might already be known
+- Need to understand how components relate to each other
 
 **Update** when:
 - Facts change or descriptions become stale
