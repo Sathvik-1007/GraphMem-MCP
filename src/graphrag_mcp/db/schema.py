@@ -10,9 +10,13 @@ from __future__ import annotations
 import importlib
 import pkgutil
 import time
-from types import ModuleType
+from typing import TYPE_CHECKING
 
-from graphrag_mcp.db.connection import Database
+if TYPE_CHECKING:
+    from types import ModuleType
+
+    from graphrag_mcp.db.connection import Database
+
 from graphrag_mcp.utils.errors import SchemaError
 from graphrag_mcp.utils.logging import get_logger
 
@@ -81,7 +85,8 @@ async def run_migrations(db: Database) -> int:
             async with db.transaction():
                 await mod.migrate(db)
                 await db.execute(
-                    "INSERT INTO schema_version (version, applied_at, description) VALUES (?, ?, ?)",
+                    "INSERT INTO schema_version (version, applied_at, description) "
+                    "VALUES (?, ?, ?)",
                     (version, time.time(), desc),
                 )
             applied += 1

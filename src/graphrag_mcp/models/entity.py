@@ -10,8 +10,16 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
+from typing import SupportsFloat, cast
 
 from graphrag_mcp.utils.ids import generate_id
+
+
+def _as_float(val: object, default: float = 0.0) -> float:
+    """Safely coerce a DB row value to *float*."""
+    if val is None:
+        return default
+    return float(cast("SupportsFloat", val))
 
 
 @dataclass(slots=True)
@@ -70,8 +78,8 @@ class Entity:
             entity_type=str(row["entity_type"]),
             description=str(row.get("description") or ""),
             properties=props,
-            created_at=float(row.get("created_at", 0)),
-            updated_at=float(row.get("updated_at", 0)),
+            created_at=_as_float(row.get("created_at")),
+            updated_at=_as_float(row.get("updated_at")),
         )
 
     def to_dict(self) -> dict[str, object]:

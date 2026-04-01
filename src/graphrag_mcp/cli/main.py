@@ -12,7 +12,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import click
 
@@ -219,7 +219,11 @@ def server(
 
         from graphrag_mcp.server import run  # lazy import — heavy deps
 
-        run(transport=transport, host=host, port=port)
+        run(
+            transport=cast("Literal['stdio', 'sse', 'streamable-http']", transport),
+            host=host,
+            port=port,
+        )
     except GraphRAGError as exc:
         log.debug("Server command failed: %s", exc, exc_info=True)
         _print_error(str(exc))
@@ -350,9 +354,9 @@ def status(db_path: str | None, project_dir: str | None, as_json: bool) -> None:
     async def _status() -> dict[str, Any]:
         storage, graph = await _open_db(db_path, project_dir)
         try:
-            stats = await graph.get_stats()
-            stats["schema_version"] = await storage.get_schema_version()
-            return stats
+            result: dict[str, Any] = await graph.get_stats()
+            result["schema_version"] = await storage.get_schema_version()
+            return result
         finally:
             await storage.close()
 
@@ -560,7 +564,7 @@ def import_data(input_file: str, db_path: str | None, project_dir: str | None) -
                 counts["entities"] = len(results)
 
                 # Map old exported IDs → newly created IDs
-                for raw_ent, result in zip(raw_entities, results):
+                for raw_ent, result in zip(raw_entities, results, strict=True):
                     old_id = str(raw_ent.get("id", ""))
                     new_id = str(result["id"])
                     if old_id:
@@ -795,8 +799,7 @@ def ui(
         from graphrag_mcp.ui.server import start_server
     except ImportError as exc:
         _print_error(
-            f"UI dependencies not installed: {exc}\n"
-            "  Install with: pip install graphrag-mcp[ui]"
+            f"UI dependencies not installed: {exc}\n  Install with: pip install graphrag-mcp[ui]"
         )
         raise SystemExit(1) from exc
 

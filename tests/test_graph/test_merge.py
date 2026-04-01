@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -40,7 +43,7 @@ async def _create_entity(graph: GraphEngine, name: str, **kwargs) -> str:
 
 
 async def test_merge_basic(db_and_engine):
-    db, graph, merger = db_and_engine
+    _db, graph, merger = db_and_engine
     target_id = await _create_entity(graph, "Alice", description="Original")
     source_id = await _create_entity(graph, "Alice Clone", description="Clone desc")
 
@@ -52,14 +55,14 @@ async def test_merge_basic(db_and_engine):
 
 
 async def test_merge_self_raises(db_and_engine):
-    db, graph, merger = db_and_engine
+    _db, graph, merger = db_and_engine
     eid = await _create_entity(graph, "Solo")
     with pytest.raises(EntityError, match="Cannot merge"):
         await merger.merge(eid, eid)
 
 
 async def test_merge_moves_observations(db_and_engine):
-    db, graph, merger = db_and_engine
+    _db, graph, merger = db_and_engine
     target_id = await _create_entity(graph, "Target")
     source_id = await _create_entity(graph, "Source")
 
@@ -76,7 +79,7 @@ async def test_merge_moves_observations(db_and_engine):
 
 
 async def test_merge_redirects_relationships(db_and_engine):
-    db, graph, merger = db_and_engine
+    _db, graph, merger = db_and_engine
     target_id = await _create_entity(graph, "Target")
     source_id = await _create_entity(graph, "Source")
     other_id = await _create_entity(graph, "Other")
@@ -97,7 +100,7 @@ async def test_merge_redirects_relationships(db_and_engine):
 
 
 async def test_merge_deduplicates_relationships(db_and_engine):
-    db, graph, merger = db_and_engine
+    _db, graph, merger = db_and_engine
     target_id = await _create_entity(graph, "Target")
     source_id = await _create_entity(graph, "Source")
     other_id = await _create_entity(graph, "Other")
@@ -125,21 +128,21 @@ async def test_merge_deduplicates_relationships(db_and_engine):
 
 
 async def test_merge_nonexistent_target(db_and_engine):
-    db, graph, merger = db_and_engine
+    _db, graph, merger = db_and_engine
     source_id = await _create_entity(graph, "Source")
     with pytest.raises(EntityError, match="not found"):
         await merger.merge("nonexistent_id", source_id)
 
 
 async def test_merge_nonexistent_source(db_and_engine):
-    db, graph, merger = db_and_engine
+    _db, graph, merger = db_and_engine
     target_id = await _create_entity(graph, "Target")
     with pytest.raises(EntityError, match="not found"):
         await merger.merge(target_id, "nonexistent_id")
 
 
 async def test_merge_description_append(db_and_engine):
-    db, graph, merger = db_and_engine
+    _db, graph, merger = db_and_engine
     target_id = await _create_entity(graph, "Target", description="First")
     source_id = await _create_entity(graph, "Source", description="Second")
 

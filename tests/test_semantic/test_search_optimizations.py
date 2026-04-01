@@ -1,8 +1,12 @@
-"""Tests for search optimization fixes: FTS5 hardening, batch relationships, RRF alpha, observation boost."""
+"""Tests for search optimization fixes: FTS5 hardening, batch relationships,
+RRF alpha, observation boost."""
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -34,7 +38,7 @@ async def search_env(tmp_path: Path):
 
 async def test_fts5_sanitize_double_quotes(search_env):
     """Queries containing double quotes don't crash FTS5."""
-    db, graph, search = search_env
+    _db, graph, search = search_env
     await graph.add_entities([Entity(name='Test "Quoted" Entity', entity_type="concept")])
     results = await search.search_entities('Test "Quoted"')
     assert len(results) >= 0  # Should not raise
@@ -42,7 +46,7 @@ async def test_fts5_sanitize_double_quotes(search_env):
 
 async def test_fts5_sanitize_boolean_operators(search_env):
     """FTS5 boolean operators in queries are treated as literals."""
-    db, graph, search = search_env
+    _db, graph, search = search_env
     await graph.add_entities([Entity(name="NOT a bug", entity_type="concept")])
     results = await search.search_entities("NOT a bug")
     assert len(results) >= 0
@@ -50,7 +54,7 @@ async def test_fts5_sanitize_boolean_operators(search_env):
 
 async def test_fts5_sanitize_special_chars(search_env):
     """Queries with *, -, +, :, ^, () don't break FTS5."""
-    db, graph, search = search_env
+    _db, graph, search = search_env
     await graph.add_entities([Entity(name="C++ Templates", entity_type="concept")])
     for query in ["C++", "error-handling", "module:auth", "test*", "(group)", "^start"]:
         results = await search.search_entities(query)
@@ -59,14 +63,14 @@ async def test_fts5_sanitize_special_chars(search_env):
 
 async def test_fts5_sanitize_empty_string(search_env):
     """Empty query returns empty results without error."""
-    db, graph, search = search_env
+    _db, _graph, search = search_env
     results = await search.search_entities("")
     assert results == []
 
 
 async def test_fts5_sanitize_whitespace_only(search_env):
     """Whitespace-only query returns empty results."""
-    db, graph, search = search_env
+    _db, _graph, search = search_env
     results = await search.search_entities("   ")
     assert results == []
 
@@ -78,14 +82,14 @@ async def test_fts5_sanitize_whitespace_only(search_env):
 
 async def test_batch_relationships_empty(search_env):
     """Batch fetch with empty list returns empty dict."""
-    db, graph, search = search_env
+    db, _graph, _search = search_env
     result = await db.get_relationships_for_entities([])
     assert result == {}
 
 
 async def test_batch_relationships_matches_single(search_env):
     """Batch fetch results match individual fetch results."""
-    db, graph, search = search_env
+    db, graph, _search = search_env
     await graph.add_entities(
         [
             Entity(name="Alice", entity_type="person"),
@@ -156,7 +160,7 @@ async def test_rrf_alpha_invalid_raises(search_env):
 
 async def test_obs_boost_disabled(search_env):
     """boost_from_observations=False skips observation search."""
-    db, graph, search = search_env
+    _db, graph, search = search_env
     await graph.add_entities([Entity(name="APIService", entity_type="module", description="API")])
     await graph.add_observations("APIService", [Observation.pending("Rate limit increased to 500")])
     # With boost disabled, should still work
@@ -166,7 +170,7 @@ async def test_obs_boost_disabled(search_env):
 
 async def test_obs_boost_zero_factor(search_env):
     """obs_boost_factor=0.0 effectively disables boosting."""
-    db, graph, search = search_env
+    _db, graph, search = search_env
     await graph.add_entities([Entity(name="APIService", entity_type="module", description="API")])
     results = await search.search_entities("anything", obs_boost_factor=0.0)
     assert isinstance(results, list)

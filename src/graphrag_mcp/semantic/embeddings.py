@@ -95,7 +95,8 @@ class EmbeddingEngine:
         if self._storage is not None:
             return self._storage
         raise EmbeddingError(
-            "No storage available. Pass storage explicitly or call set_storage()/initialize() first."
+            "No storage available. Pass storage explicitly "
+            "or call set_storage()/initialize() first."
         )
 
     @property
@@ -121,8 +122,10 @@ class EmbeddingEngine:
         # Try ONNX first
         if self._use_onnx:
             try:
-                import onnxruntime  # noqa: F401
-                from sentence_transformers import SentenceTransformer
+                import onnxruntime  # type: ignore[import-not-found]  # noqa: F401
+                from sentence_transformers import (  # type: ignore[import-not-found]
+                    SentenceTransformer,
+                )
 
                 log.info("Loading model %s with ONNX backend", self._model_name)
                 # Try to use ONNX-optimized model
@@ -247,7 +250,7 @@ class EmbeddingEngine:
             )
 
             now = time.time()
-            for idx, (text, vec) in enumerate(zip(uncached_texts, vectors)):
+            for idx, (text, vec) in enumerate(zip(uncached_texts, vectors, strict=True)):
                 vec_list = vec.tolist()
                 results[uncached_indices[idx]] = vec_list
 

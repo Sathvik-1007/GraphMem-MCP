@@ -9,10 +9,8 @@ from pathlib import Path
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
 
 from graphrag_mcp.ui.routes import setup_routes
-
 
 # ---------------------------------------------------------------------------
 # Mocks

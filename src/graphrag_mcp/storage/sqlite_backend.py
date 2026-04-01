@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+    from pathlib import Path
 
 from graphrag_mcp.db.connection import Database
 from graphrag_mcp.db.schema import run_migrations
@@ -70,7 +72,7 @@ class SQLiteBackend(StorageBackend):
         properties: dict[str, object],
         created_at: float,
         updated_at: float,
-    ) -> str:
+    ) -> Literal["created", "merged"]:
         db = self._require_db()
         existing = await db.fetch_one(
             "SELECT * FROM entities WHERE name = ? AND entity_type = ?",
@@ -102,7 +104,8 @@ class SQLiteBackend(StorageBackend):
             return "merged"
 
         await db.execute(
-            "INSERT INTO entities (id, name, entity_type, description, properties, created_at, updated_at) "
+            "INSERT INTO entities "
+            "(id, name, entity_type, description, properties, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 entity_id,
@@ -143,7 +146,8 @@ class SQLiteBackend(StorageBackend):
         db = self._require_db()
         if entity_type is not None:
             return await db.fetch_all(
-                "SELECT * FROM entities WHERE entity_type = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                "SELECT * FROM entities WHERE entity_type = ? "
+                "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
                 (entity_type.strip().lower(), limit, offset),
             )
         return await db.fetch_all(
@@ -155,7 +159,7 @@ class SQLiteBackend(StorageBackend):
         if not updates:
             return
         set_clauses = [f"{col} = ?" for col in updates]
-        params = list(updates.values()) + [entity_id]
+        params = [*list(updates.values()), entity_id]
         sql = f"UPDATE entities SET {', '.join(set_clauses)} WHERE id = ?"
         await self._require_db().execute(sql, tuple(params))
 
@@ -174,7 +178,8 @@ class SQLiteBackend(StorageBackend):
 
     async def entity_type_distribution(self) -> dict[str, int]:
         rows = await self._require_db().fetch_all(
-            "SELECT entity_type, COUNT(*) AS cnt FROM entities GROUP BY entity_type ORDER BY cnt DESC"
+            "SELECT entity_type, COUNT(*) AS cnt FROM entities "
+            "GROUP BY entity_type ORDER BY cnt DESC"
         )
         return {str(r["entity_type"]): int(r["cnt"]) for r in rows}
 
@@ -208,7 +213,7 @@ class SQLiteBackend(StorageBackend):
         properties: dict[str, object],
         created_at: float,
         updated_at: float,
-    ) -> str:
+    ) -> Literal["created", "updated"]:
         db = self._require_db()
         existing = await db.fetch_one(
             "SELECT * FROM relationships "
@@ -235,7 +240,8 @@ class SQLiteBackend(StorageBackend):
 
         await db.execute(
             "INSERT INTO relationships "
-            "(id, source_id, target_id, relationship_type, weight, properties, created_at, updated_at) "
+            "(id, source_id, target_id, relationship_type, "
+            "weight, properties, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 rel_id,
@@ -366,7 +372,7 @@ class SQLiteBackend(StorageBackend):
         if not updates:
             return
         set_clauses = [f"{col} = ?" for col in updates]
-        params = list(updates.values()) + [rel_id]
+        params = [*list(updates.values()), rel_id]
         sql = f"UPDATE relationships SET {', '.join(set_clauses)} WHERE id = ?"
         await self._require_db().execute(sql, tuple(params))
 

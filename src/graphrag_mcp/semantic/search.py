@@ -152,7 +152,8 @@ class HybridSearch:
         scored = [
             (
                 item_id,
-                alpha * vec_results.get(item_id, 0.0) + (1.0 - alpha) * fts_results.get(item_id, 0.0),
+                alpha * vec_results.get(item_id, 0.0)
+                + (1.0 - alpha) * fts_results.get(item_id, 0.0),
             )
             for item_id in all_ids
         ]
@@ -189,26 +190,23 @@ class HybridSearch:
             return entity_scores
 
         # Batch-fetch observations to find parent entity IDs
-        obs_ids = [oid for oid, _ in obs_scored[:limit * 3]]
+        obs_ids = [oid for oid, _ in obs_scored[: limit * 3]]
         if not obs_ids:
             return entity_scores
 
+        placeholders = ",".join("?" for _ in obs_ids)
         obs_rows = await self._storage.fetch_all(
-            f"SELECT id, entity_id FROM observations WHERE id IN ({','.join('?' for _ in obs_ids)})",
+            f"SELECT id, entity_id FROM observations WHERE id IN ({placeholders})",
             tuple(obs_ids),
         )
-        obs_to_entity: dict[str, str] = {
-            str(r["id"]): str(r["entity_id"]) for r in obs_rows
-        }
+        obs_to_entity: dict[str, str] = {str(r["id"]): str(r["entity_id"]) for r in obs_rows}
 
         # Accumulate observation scores per parent entity
         obs_entity_scores: dict[str, float] = {}
         for obs_id, obs_score in obs_scored:
             parent_eid = obs_to_entity.get(obs_id)
             if parent_eid:
-                obs_entity_scores[parent_eid] = (
-                    obs_entity_scores.get(parent_eid, 0.0) + obs_score
-                )
+                obs_entity_scores[parent_eid] = obs_entity_scores.get(parent_eid, 0.0) + obs_score
 
         # Merge: entity_score + obs_score * boost_factor
         entity_score_map = dict(entity_scores)
@@ -217,8 +215,7 @@ class HybridSearch:
         merged = [
             (
                 eid,
-                entity_score_map.get(eid, 0.0)
-                + obs_entity_scores.get(eid, 0.0) * obs_boost_factor,
+                entity_score_map.get(eid, 0.0) + obs_entity_scores.get(eid, 0.0) * obs_boost_factor,
             )
             for eid in all_ids
         ]
@@ -253,9 +250,7 @@ class HybridSearch:
 
         # ── Observation-boosted entity fusion ────────────────────
         if boost_from_observations and obs_boost_factor > 0.0:
-            scored = await self._boost_from_observations(
-                query, scored, limit, obs_boost_factor
-            )
+            scored = await self._boost_from_observations(query, scored, limit, obs_boost_factor)
 
         if not scored:
             return []

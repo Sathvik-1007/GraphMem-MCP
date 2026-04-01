@@ -12,10 +12,14 @@ to instantiate the configured backend (SQLite, Neo4j, Memgraph, etc.).
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from graphrag_mcp.graph.engine import ObservationResult
 
 from mcp.server.fastmcp import FastMCP
 
@@ -227,12 +231,12 @@ async def _embed_entities(entity_ids: list[str]) -> None:
         return
 
     vectors = await state.embeddings.embed(texts)
-    for eid, vec in zip(valid_ids, vectors):
+    for eid, vec in zip(valid_ids, vectors, strict=True):
         if vec is not None:
             await state.embeddings.upsert_entity_embedding(eid, vec)
 
 
-async def _embed_observations(obs_results: list[dict[str, Any]]) -> None:
+async def _embed_observations(obs_results: list[ObservationResult]) -> None:
     """Compute and upsert embeddings for newly created observations.
 
     Each element of *obs_results* must have ``id`` and ``content`` keys.
@@ -246,7 +250,7 @@ async def _embed_observations(obs_results: list[dict[str, Any]]) -> None:
     ids = [str(o["id"]) for o in obs_results]
 
     vectors = await state.embeddings.embed(texts)
-    for oid, vec in zip(ids, vectors):
+    for oid, vec in zip(ids, vectors, strict=True):
         if vec is not None:
             await state.embeddings.upsert_observation_embedding(oid, vec)
 
@@ -258,7 +262,8 @@ async def _embed_observations(obs_results: list[dict[str, Any]]) -> None:
 
 @mcp.tool()
 async def add_entities(entities: list[dict[str, Any]]) -> dict[str, Any]:
-    """Add entities to the knowledge graph. Entities with the same name and type are automatically merged.
+    """Add entities to the knowledge graph. Entities with the same name and type are
+    automatically merged.
 
     Each entity needs: name (str), entity_type (str, e.g. 'person', 'concept', 'place').
     Optional: description (str), properties (dict), observations (list[str]).
@@ -352,7 +357,7 @@ async def add_relationships(relationships: list[dict[str, Any]]) -> dict[str, An
 
         # Enrich results with names for clarity
         enriched: list[dict[str, Any]] = []
-        for raw, result in zip(relationships, results):
+        for raw, result in zip(relationships, results, strict=True):
             enriched.append(
                 {
                     **result,
@@ -677,7 +682,8 @@ async def read_graph() -> dict[str, Any]:
     try:
         state = _require_state()
 
-        return await state.graph.get_stats()
+        result: dict[str, Any] = dict(await state.graph.get_stats())
+        return result
 
     except GraphRAGError as exc:
         return _error_response(exc, tool_name="read_graph")
@@ -770,7 +776,7 @@ def create_server(config: Config | None = None) -> FastMCP:
 
 
 def run(
-    transport: str = "stdio",
+    transport: Literal["stdio", "sse", "streamable-http"] = "stdio",
     host: str = "127.0.0.1",
     port: int = 8080,
 ) -> None:
@@ -792,4 +798,6 @@ def run(
             host,
             port,
         )
-        mcp.run(transport=transport, host=host, port=port)
+        # host/port are not supported by FastMCP.run() in mcp 1.x; pass
+        # only transport for now until the SDK adds network binding options.
+        mcp.run(transport=transport)

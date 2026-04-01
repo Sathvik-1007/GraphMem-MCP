@@ -18,9 +18,11 @@ Design choices:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 class StorageBackend(ABC):
@@ -78,7 +80,7 @@ class StorageBackend(ABC):
         properties: dict[str, object],
         created_at: float,
         updated_at: float,
-    ) -> str:
+    ) -> Literal["created", "merged"]:
         """Insert or update an entity, returning ``"created"`` or ``"merged"``."""
 
     @abstractmethod
@@ -152,7 +154,7 @@ class StorageBackend(ABC):
         properties: dict[str, object],
         created_at: float,
         updated_at: float,
-    ) -> str:
+    ) -> Literal["created", "updated"]:
         """Insert or update a relationship, returning ``"created"`` or ``"updated"``."""
 
     @abstractmethod

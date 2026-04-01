@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest_asyncio
 
@@ -26,13 +29,13 @@ async def search_env(tmp_path: Path):
 
 
 async def test_search_entities_empty(search_env):
-    db, graph, search = search_env
+    _db, _graph, search = search_env
     results = await search.search_entities("anything")
     assert results == []
 
 
 async def test_search_entities_fts_match(search_env):
-    db, graph, search = search_env
+    _db, graph, search = search_env
     await graph.add_entities(
         [
             Entity(
@@ -55,7 +58,7 @@ async def test_search_entities_fts_match(search_env):
 
 
 async def test_search_entities_with_type_filter(search_env):
-    db, graph, search = search_env
+    _db, graph, search = search_env
     await graph.add_entities(
         [
             Entity(name="Alice", entity_type="person"),
@@ -69,7 +72,7 @@ async def test_search_entities_with_type_filter(search_env):
 
 
 async def test_search_entities_includes_relationships(search_env):
-    db, graph, search = search_env
+    _db, graph, search = search_env
     await graph.add_entities(
         [
             Entity(name="Alice", entity_type="person"),
@@ -94,7 +97,7 @@ async def test_search_entities_includes_relationships(search_env):
 
 
 async def test_search_entities_with_observations(search_env):
-    db, graph, search = search_env
+    _db, graph, search = search_env
     await graph.add_entities(
         [
             Entity(name="Alice", entity_type="person"),
@@ -110,13 +113,13 @@ async def test_search_entities_with_observations(search_env):
 
 
 async def test_search_observations_empty(search_env):
-    db, graph, search = search_env
+    _db, _graph, search = search_env
     results = await search.search_observations("anything")
     assert results == []
 
 
 async def test_search_observations_fts_match(search_env):
-    db, graph, search = search_env
+    _db, graph, search = search_env
     await graph.add_entities([Entity(name="Alice", entity_type="person")])
     await graph.add_observations(
         "Alice",
@@ -132,7 +135,7 @@ async def test_search_observations_fts_match(search_env):
 
 
 async def test_search_observations_entity_filter(search_env):
-    db, graph, search = search_env
+    _db, graph, search = search_env
     await graph.add_entities(
         [
             Entity(name="Alice", entity_type="person"),

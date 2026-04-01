@@ -11,6 +11,10 @@ import importlib.resources
 import socket
 import webbrowser
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 from aiohttp import web
 
@@ -34,7 +38,7 @@ def _resolve_frontend_dir() -> Path | None:
 
     Returns the path if it exists and contains ``index.html``, else ``None``.
     """
-    global _FRONTEND_DIR  # noqa: PLW0603
+    global _FRONTEND_DIR
     if _FRONTEND_DIR is not None:
         return _FRONTEND_DIR
 
@@ -78,7 +82,7 @@ async def create_app(
 @web.middleware
 async def _error_middleware(
     request: web.Request,
-    handler: web.RequestHandler,
+    handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
 ) -> web.StreamResponse:
     """Catch unhandled exceptions and return structured JSON errors."""
     try:

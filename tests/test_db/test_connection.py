@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -133,7 +136,7 @@ async def test_pragma_wal_mode(db: Database) -> None:
     row = await db.fetch_one("PRAGMA journal_mode")
     assert row is not None
     # journal_mode returns the mode name as a string
-    mode = list(row.values())[0]
+    mode = next(iter(row.values()))
     assert mode.lower() == "wal"
 
 

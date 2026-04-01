@@ -6,9 +6,11 @@ from ``request.app`` — no direct database connections.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from aiohttp import web
 

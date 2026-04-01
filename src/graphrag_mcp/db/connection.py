@@ -8,10 +8,12 @@ workloads: WAL journal, large page cache, memory-mapped I/O.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+    from pathlib import Path
 
 import aiosqlite
 
@@ -92,8 +94,9 @@ class Database:
     async def _load_extensions(self) -> None:
         """Load the sqlite-vec extension for vector search."""
         try:
-            import sqlite_vec
+            import sqlite_vec  # type: ignore[import-untyped]
 
+            assert self._conn is not None  # always true when called from open()
             await self._conn.enable_load_extension(True)
             conn_raw = self._conn._conn  # underlying sqlite3.Connection
             sqlite_vec.load(conn_raw)
@@ -117,7 +120,7 @@ class Database:
         except sqlite3.Error as exc:
             raise DatabaseError(f"SQL error: {exc}", details=sql) from exc
 
-    async def execute_many(self, sql: str, params_seq: list[tuple]) -> None:
+    async def execute_many(self, sql: str, params_seq: list[tuple[object, ...]]) -> None:
         try:
             await self.conn.executemany(sql, params_seq)
         except sqlite3.Error as exc:

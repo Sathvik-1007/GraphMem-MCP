@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -86,7 +89,7 @@ class TestVectorSearch:
         assert names & {"Machine Learning", "Deep Learning"}
 
     async def test_upsert_and_delete_entity_embedding(self, vector_env):
-        db, graph, engine, search, vec_available = vector_env
+        db, graph, engine, _search, vec_available = vector_env
         if not vec_available:
             pytest.skip("sqlite-vec not available")
 
@@ -109,7 +112,7 @@ class TestVectorSearch:
         assert row is None
 
     async def test_upsert_and_delete_observation_embedding(self, vector_env):
-        db, graph, engine, search, vec_available = vector_env
+        db, graph, engine, _search, vec_available = vector_env
         if not vec_available:
             pytest.skip("sqlite-vec not available")
 
@@ -146,7 +149,7 @@ class TestEmbeddingHelpers:
         blob = _embedding_to_bytes(original)
         restored = _bytes_to_embedding(blob)
         assert len(restored) == len(original)
-        for a, b in zip(original, restored):
+        for a, b in zip(original, restored, strict=True):
             assert abs(a - b) < 1e-6
 
     def test_content_hash_deterministic(self):

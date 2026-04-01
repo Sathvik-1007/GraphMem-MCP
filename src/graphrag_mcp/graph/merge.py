@@ -159,7 +159,8 @@ class EntityMerger:
             await self._storage.delete_entity(source_id)
 
         log.info(
-            "Merged entity %s into %s: %d observations moved, %d relationships redirected, %d duplicates removed",
+            "Merged entity %s into %s: %d observations moved, "
+            "%d relationships redirected, %d duplicates removed",
             source_id,
             target_id,
             moved_observations,

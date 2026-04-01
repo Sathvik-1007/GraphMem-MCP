@@ -9,8 +9,17 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import SupportsFloat, cast
 
 from graphrag_mcp.utils.ids import generate_id
+
+
+def _as_float(val: object, default: float = 0.0) -> float:
+    """Safely coerce a DB row value to *float*."""
+    if val is None:
+        return default
+    return float(cast("SupportsFloat", val))
+
 
 # Sentinel value used when creating Observation objects before the real
 # entity ID is known (e.g. during bulk add_entities where the entity
@@ -60,7 +69,7 @@ class Observation:
             entity_id=str(row["entity_id"]),
             content=str(row["content"]),
             source=str(row.get("source") or ""),
-            created_at=float(row.get("created_at", 0)),
+            created_at=_as_float(row.get("created_at")),
         )
 
     def to_dict(self) -> dict[str, object]:

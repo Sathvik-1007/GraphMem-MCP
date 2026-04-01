@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from graphrag_mcp.db.connection import Database
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from graphrag_mcp.db.connection import Database
 
 DESCRIPTION = "Initial schema: entities, relationships, observations, FTS5, embedding cache"
 

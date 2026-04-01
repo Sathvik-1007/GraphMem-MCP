@@ -185,7 +185,7 @@ class GraphTraversal:
         target_id: str,
         *,
         max_hops: int = 5,
-    ) -> list[dict[str, Any]]:
+    ) -> list[list[dict[str, Any]]]:
         """Find shortest paths between two entities using BFS.
 
         Args:
@@ -207,7 +207,8 @@ class GraphTraversal:
 
         sql = f"""
         WITH RECURSIVE traverse(entity_id, depth, visited, path) AS (
-            SELECT ?, 0, json_array(?), json_array(json_object('entity_id', ?, 'entity_name', '', 'relationship_type', ''))
+            SELECT ?, 0, json_array(?), json_array(json_object(
+                'entity_id', ?, 'entity_name', '', 'relationship_type', ''))
             UNION ALL
             SELECT
                 {_NEXT_ENTITY_BOTH},
@@ -253,7 +254,7 @@ class GraphTraversal:
         # Batch-resolve entity names
         name_map = await self._storage.resolve_entity_names(all_entity_ids)
 
-        results: list[dict[str, Any]] = []
+        results: list[list[dict[str, Any]]] = []
         for path in parsed_paths:
             enriched: list[dict[str, Any]] = []
             for step in path:
