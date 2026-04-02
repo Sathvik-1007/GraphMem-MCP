@@ -125,13 +125,10 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
         device=config.embedding_device,
         cache_size=config.cache_size,
     )
-    try:
-        await embeddings.initialize(storage)
-    except GraphRAGError as init_exc:
-        log.warning(
-            "Embedding engine unavailable — semantic search disabled: %s",
-            init_exc,
-        )
+    # initialize() is lightweight — it stores config and reads DB metadata
+    # but does NOT load the PyTorch model.  The model loads lazily on the
+    # first embed() call, keeping MCP startup fast (< 2 seconds).
+    await embeddings.initialize(storage)
 
     graph = GraphEngine(storage)
     traversal = GraphTraversal(storage)

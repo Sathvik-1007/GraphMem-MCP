@@ -64,8 +64,8 @@ class EmbeddingEngine:
 
     Usage::
         engine = EmbeddingEngine(model_name="all-MiniLM-L6-v2", use_onnx=True, device="cpu")
-        await engine.initialize(storage)  # loads model, checks dimension
-        vectors = await engine.embed(["hello world", "test"])
+        await engine.initialize(storage)  # stores config only — fast, no model load
+        vectors = await engine.embed(["hello world", "test"])  # model loads here on first call
     """
 
     def __init__(
@@ -83,6 +83,8 @@ class EmbeddingEngine:
         self._dimension: int | None = None
         self._available = False
         self._storage: StorageBackend | None = None
+        self._model_loaded = False  # True once _ensure_model_loaded() succeeds
+        self._stored_dimension: int | None = None  # Cached from DB metadata
 
     def set_storage(self, storage: StorageBackend) -> None:
         """Store a storage backend reference for use in subsequent calls."""
@@ -168,35 +170,65 @@ class EmbeddingEngine:
         log.info("Detected embedding dimension: %d", dim)
         return dim
 
-    async def initialize(self, storage: StorageBackend | None = None) -> None:
-        """Load model, detect dimension, validate against stored metadata.
+    def _ensure_model_loaded(self) -> None:
+        """Lazy-load the model on first use. Idempotent after first success.
 
-        If the storage has no dimension stored, stores the detected one.
-        If it has a different dimension, raises DimensionMismatchError.
+        This is the core of the lazy loading strategy: ``initialize()`` runs
+        fast (no model loading), and the heavyweight PyTorch/ONNX import +
+        model download happens here on the first ``embed()`` call.
+
+        If loading fails, ``_available`` is set to ``False`` and an
+        ``EmbeddingError`` is raised so callers degrade gracefully.
         """
-        storage = self._resolve_storage(storage)
+        if self._model_loaded:
+            return
+
         try:
             self._load_model()
-            self._dimension = self._detect_dimension()
+            detected_dim = self._detect_dimension()
 
-            # Check stored dimension
+            # Validate against stored dimension from DB (set during initialize())
+            if self._stored_dimension is not None and self._stored_dimension != detected_dim:
+                raise DimensionMismatchError(self._stored_dimension, detected_dim)
+
+            self._dimension = detected_dim
+            self._model_loaded = True
+            log.info("Lazy model load complete (dim=%d)", detected_dim)
+        except (ModelLoadError, DimensionMismatchError):
+            self._available = False
+            raise
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._available = False
+            raise EmbeddingError(f"Lazy model load failed: {exc}") from exc
+
+    async def initialize(self, storage: StorageBackend | None = None) -> None:
+        """Prepare the embedding engine for use — fast, no model loading.
+
+        Stores the storage reference, reads any previously-stored dimension
+        from DB metadata, and ensures vector tables exist.  The actual model
+        load is deferred to the first ``embed()`` call via
+        ``_ensure_model_loaded()``, keeping MCP server startup fast.
+
+        If the storage already knows the embedding dimension (from a prior
+        session), vector tables are created with that dimension immediately.
+        Otherwise table creation is also deferred to first use.
+        """
+        storage = self._resolve_storage(storage)
+        self._storage = storage
+        try:
+            # Read stored dimension from a previous session (if any)
             stored_dim_str = await storage.get_metadata("embedding_dimension")
             if stored_dim_str:
-                stored_dim = int(stored_dim_str)
-                if stored_dim != self._dimension:
-                    raise DimensionMismatchError(stored_dim, self._dimension)
-            else:
-                await storage.set_metadata("embedding_dimension", str(self._dimension))
-                await storage.set_metadata("embedding_model", self._model_name)
+                self._stored_dimension = int(stored_dim_str)
+                self._dimension = self._stored_dimension
+                # We know the dimension — create vec tables now
+                await storage.ensure_vec_tables(self._stored_dimension)
 
-            # Create vector tables if they don't exist
-            await storage.ensure_vec_tables(self._dimension)
-
+            # Mark as available optimistically — model will load lazily.
+            # If model load fails later, _ensure_model_loaded() sets
+            # _available = False and raises.
             self._available = True
-            self._storage = storage
-        except (ModelLoadError, DimensionMismatchError):
-            raise
-        except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+        except (sqlite3.Error, ValueError) as exc:
             log.warning("Embedding initialization failed: %s. Semantic search disabled.", exc)
             self._available = False
 
@@ -219,7 +251,17 @@ class EmbeddingEngine:
         if not self._available:
             raise EmbeddingError("Embedding engine not available.")
 
+        # Lazy-load model on first embed() call
+        self._ensure_model_loaded()
+
         storage = self._resolve_storage(storage)
+
+        # If this is the first session (no stored dimension), persist metadata now
+        if self._stored_dimension is None and self._dimension is not None:
+            await storage.set_metadata("embedding_dimension", str(self._dimension))
+            await storage.set_metadata("embedding_model", self._model_name)
+            await storage.ensure_vec_tables(self._dimension)
+            self._stored_dimension = self._dimension
 
         results: list[list[float] | None] = [None] * len(texts)
         uncached_indices: list[int] = []

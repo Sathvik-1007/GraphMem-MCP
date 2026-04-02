@@ -29,6 +29,7 @@ async def vector_env(tmp_path: Path):
     engine = EmbeddingEngine(model_name="test-model", use_onnx=False)
     engine._available = True
     engine._dimension = 4  # Small dimension for testing
+    engine._model_loaded = True  # Skip lazy model loading in tests
     engine._storage = storage
 
     # Create vector tables via the storage backend
