@@ -1,11 +1,10 @@
-import { useState, useCallback, useRef, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import { useGraph } from "./hooks/useGraph";
 import { useSearch } from "./hooks/useSearch";
 import { useTheme } from "./hooks/useTheme";
 import { DEFAULT_PHYSICS } from "./engine/ForceEngine";
 import type { PhysicsConfig } from "./engine/ForceEngine";
 import GraphCanvas from "./components/GraphCanvas";
-import type { GraphCanvasHandle } from "./components/GraphCanvas";
 import Sidebar from "./components/Sidebar";
 import DetailPanel from "./components/DetailPanel";
 import { addEntity, addObservations, addRelationship, updateEntity, deleteEntity, fetchGraphs, switchGraph } from "./api/client";
@@ -26,7 +25,6 @@ export default function App() {
   const { query, results, loading: searchLoading, search, clearSearch } = useSearch();
   const { theme, toggleTheme } = useTheme();
   const [physics, setPhysics] = useState<PhysicsConfig>({ ...DEFAULT_PHYSICS });
-  const canvasRef = useRef<GraphCanvasHandle>(null);
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
 
   // Multi-graph state
@@ -90,11 +88,10 @@ export default function App() {
     clearEntity();
   }, [clearEntity]);
 
-  // Navigate to entity: select + center canvas (used by search, detail panel, manage panel)
+  // Navigate to entity: select (used by search, detail panel, manage panel)
   const handleNavigateToEntity = useCallback(
     (name: string) => {
       void selectEntity(name);
-      canvasRef.current?.focusNode(name);
     },
     [selectEntity],
   );
@@ -222,7 +219,6 @@ export default function App() {
       </div>
 
       <GraphCanvas
-        ref={canvasRef}
         graph={state.graph}
         visibleEntityTypes={state.visibleEntityTypes}
         selectedNodeId={state.selectedEntity?.name ?? null}

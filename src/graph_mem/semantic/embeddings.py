@@ -153,7 +153,7 @@ class EmbeddingEngine:
                 self._available = True
                 log.info("ONNX model loaded successfully")
                 return
-            except (ImportError, OSError, RuntimeError) as e:
+            except Exception as e:
                 log.info("ONNX loading failed (%s) — falling back to PyTorch", e)
 
         # Fall back to PyTorch

@@ -1,14 +1,10 @@
-import { useEffect, useRef, useCallback, useState, useImperativeHandle, forwardRef } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { ForceEngine } from "../engine/ForceEngine";
 import type { SimNode, PhysicsConfig } from "../engine/ForceEngine";
 import { render, s2w } from "../engine/CanvasRenderer";
 import type { ViewTransform, RenderState } from "../engine/CanvasRenderer";
 import { entityColorPalette } from "../utils/colors";
 import type { GraphResponse } from "../types/graph";
-
-export interface GraphCanvasHandle {
-  focusNode: (name: string) => void;
-}
 
 export interface GraphCanvasProps {
   graph: GraphResponse | null;
@@ -29,23 +25,21 @@ interface TooltipData {
   neighbors: string[];
 }
 
-const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function GraphCanvas({
+export default function GraphCanvas({
   graph,
   visibleEntityTypes,
   selectedNodeId,
   physics,
   onSelectNode,
   onDeselectNode,
-}: GraphCanvasProps, ref) {
+}: GraphCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<ForceEngine>(new ForceEngine());
   const viewRef = useRef<ViewTransform>({ x: 0, y: 0, zoom: 1 });
   const rafRef = useRef<number>(0);
   const hoveredRef = useRef<SimNode | null>(null);
   const initialFitDoneRef = useRef(false);
-  const focusLockRef = useRef(false);
   const anchorIdRef = useRef<string | null>(null);
-  const focusTargetRef = useRef<string | null>(null);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
 
   // Drag state — separate clickStart (never mutated) from panLast (mutated for pan delta)
@@ -66,49 +60,6 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
   onDeselectRef.current = onDeselectNode;
   selectedRef.current = selectedNodeId;
 
-  // ── Expose focusNode to parent via ref ──
-  useImperativeHandle(ref, () => ({
-    focusNode(name: string) {
-      const engine = engineRef.current;
-      const node = engine.nodes.find((n) => n.id === name);
-      if (!node) {
-        // Node might not be in engine yet — schedule a retry
-        let retries = 0;
-        const interval = setInterval(() => {
-          retries++;
-          const n = engineRef.current.nodes.find((nd) => nd.id === name);
-          if (n) {
-            clearInterval(interval);
-            focusTargetRef.current = name;
-            viewRef.current = {
-              x: -n.x,
-              y: -n.y,
-              zoom: Math.max(viewRef.current.zoom, 1.2),
-            };
-            focusLockRef.current = true;
-            setTimeout(() => { focusLockRef.current = false; }, 2000);
-          } else if (retries > 20) {
-            clearInterval(interval);
-          }
-        }, 50);
-        return;
-      }
-
-      // Set continuous focus target — the animation loop will track it
-      focusTargetRef.current = name;
-
-      // INSTANT snap to the node — no animation delay
-      viewRef.current = {
-        x: -node.x,
-        y: -node.y,
-        zoom: Math.max(viewRef.current.zoom, 1.2),
-      };
-      // Prevent fitToView from overriding this focus
-      focusLockRef.current = true;
-      setTimeout(() => { focusLockRef.current = false; }, 2000);
-    },
-  }), []);
-
   // ── Build simulation graph when data changes ──
   useEffect(() => {
     const engine = engineRef.current;
@@ -118,9 +69,6 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
     for (const n of engine.nodes) {
       oldPositions.set(n.id, { x: n.x, y: n.y, pinned: n.pinned });
     }
-
-    // Preserve the focus target across rebuilds — don't let it get nulled
-    const savedFocusTarget = focusTargetRef.current;
 
     engine.clear();
     if (!graph) return;
@@ -165,8 +113,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
 
     // ── Anchor the most-connected node at origin ──
     // This stabilizes the coordinate system: the highest-degree node sits at (0,0),
-    // all other nodes settle relative to it via physics. This makes focusNode reliable
-    // because world coordinates are stable, and handleCenter naturally re-centers on it.
+    // all other nodes settle relative to it via physics, and handleCenter re-centers on it.
     if (engine.nodes.length > 0) {
       let anchorIdx = 0;
       let maxDeg = engine.nodes[0]!.degree;
@@ -185,18 +132,13 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
       anchorIdRef.current = anchor.id;
     }
 
-    // Restore focus target if it still exists in the new graph
-    if (savedFocusTarget && nameSet.has(savedFocusTarget)) {
-      focusTargetRef.current = savedFocusTarget;
-    }
-
     engine.reheat();
 
     // Only auto-fit on first load; subsequent changes preserve current view
     if (!initialFitDoneRef.current) {
       initialFitDoneRef.current = true;
       setTimeout(() => {
-        if (!focusLockRef.current) fitToView();
+        fitToView();
       }, 600);
     }
   }, [graph, visibleEntityTypes]);
@@ -234,32 +176,6 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
       const engine = engineRef.current;
       engine.tick();
 
-      // ── Continuous focus tracking ──
-      // When a focusTarget is set, smoothly follow the node each frame
-      // so the view stays centered even while physics is settling.
-      const ft = focusTargetRef.current;
-      if (ft) {
-        const targetNode = engine.nodes.find((n) => n.id === ft);
-        if (targetNode) {
-          const view = viewRef.current;
-          // Fast lerp for responsive tracking (0.3 instead of 0.15)
-          const lerpFactor = 0.3;
-          const dx = -targetNode.x - view.x;
-          const dy = -targetNode.y - view.y;
-          // Snap if very close, otherwise lerp
-          if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
-            view.x = -targetNode.x;
-            view.y = -targetNode.y;
-          } else {
-            view.x += dx * lerpFactor;
-            view.y += dy * lerpFactor;
-          }
-        } else {
-          // Node no longer exists (filtered out?) — stop tracking
-          focusTargetRef.current = null;
-        }
-      }
-
       const state: RenderState = {
         hoveredNode: hoveredRef.current,
         selectedNode: selectedRef.current,
@@ -289,7 +205,6 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
 
     function onWheel(e: WheelEvent) {
       e.preventDefault();
-      // DON'T clear focus on zoom — user may want to zoom into focused node
       const view = viewRef.current;
       const rect = canvas!.getBoundingClientRect();
       const mx = e.clientX - rect.left;
@@ -315,7 +230,6 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    // DON'T clear focus here — only clear when user actually drags/pans (in handleMouseMove)
 
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
@@ -364,8 +278,6 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
     const drag = dragRef.current;
 
     if (drag.node) {
-      // Dragging a node — cancel focus tracking since user is interacting
-      focusTargetRef.current = null;
       // Dragging a node — update position in world coords
       const world = s2w(mx, my, view, rect.width, rect.height);
       drag.node.x = world.x;
@@ -375,9 +287,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
       // Warm alpha to keep simulation alive during drag (from reference)
       engineRef.current.alpha = Math.max(engineRef.current.alpha, 0.25);
     } else if (drag.panning) {
-      // Panning — cancel focus tracking since user is interacting
-      focusTargetRef.current = null;
-      // Panning — use panLast (not clickStart) for incremental delta
+      // Panning
       const dx = mx - drag.panLastX;
       const dy = my - drag.panLastY;
       view.x += dx / view.zoom;
@@ -617,6 +527,4 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
       </div>
     </div>
   );
-});
-
-export default GraphCanvas;
+}
