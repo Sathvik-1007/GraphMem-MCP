@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import { useGraph } from "./hooks/useGraph";
 import { useSearch } from "./hooks/useSearch";
 import { useTheme } from "./hooks/useTheme";
@@ -8,7 +8,8 @@ import GraphCanvas from "./components/GraphCanvas";
 import type { GraphCanvasHandle } from "./components/GraphCanvas";
 import Sidebar from "./components/Sidebar";
 import DetailPanel from "./components/DetailPanel";
-import { addEntity, addObservations, addRelationship, updateEntity, deleteEntity } from "./api/client";
+import { addEntity, addObservations, addRelationship, updateEntity, deleteEntity, fetchGraphs, switchGraph } from "./api/client";
+import type { GraphInfo } from "./api/client";
 
 export default function App() {
   const {
@@ -27,6 +28,46 @@ export default function App() {
   const [physics, setPhysics] = useState<PhysicsConfig>({ ...DEFAULT_PHYSICS });
   const canvasRef = useRef<GraphCanvasHandle>(null);
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
+
+  // Multi-graph state
+  const [graphs, setGraphs] = useState<GraphInfo[]>([]);
+  const [activeGraph, setActiveGraph] = useState<string | null>(null);
+  const [graphPickerOpen, setGraphPickerOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
+
+  // Load available graphs
+  useEffect(() => {
+    fetchGraphs()
+      .then((res) => {
+        setGraphs(res.graphs);
+        setActiveGraph(res.active);
+      })
+      .catch(() => {
+        // Multi-graph not available or no .graphmem dir
+      });
+  }, []);
+
+  const handleSwitchGraph = useCallback(
+    async (name: string) => {
+      if (name === activeGraph || switching) return;
+      setSwitching(true);
+      setGraphPickerOpen(false);
+      try {
+        await switchGraph(name);
+        setActiveGraph(name);
+        // Refresh the graph list and graph data
+        const res = await fetchGraphs();
+        setGraphs(res.graphs);
+        await refreshGraph();
+        clearEntity();
+      } catch (err) {
+        console.error("Failed to switch graph:", err);
+      } finally {
+        setSwitching(false);
+      }
+    },
+    [activeGraph, switching, refreshGraph, clearEntity],
+  );
 
   // Collect all entity names for clickable observation keywords
   const allEntityNames = useMemo(
@@ -132,6 +173,42 @@ export default function App() {
           </svg>
           <span className="title-bar-name">GraphMem <span className="title-bar-mcp">MCP</span></span>
         </div>
+        {/* Graph picker dropdown */}
+        {graphs.length > 1 && (
+          <div className="graph-picker" style={{ position: "relative" }}>
+            <button
+              className="graph-picker-btn"
+              onClick={() => setGraphPickerOpen((v) => !v)}
+              disabled={switching}
+              title="Switch graph"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 4 }}>
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+              </svg>
+              {switching ? "Switching..." : (activeGraph || "default")}
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginLeft: 4 }}>
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+            {graphPickerOpen && (
+              <div className="graph-picker-dropdown">
+                {graphs.map((g) => (
+                  <button
+                    key={g.name}
+                    className={`graph-picker-item${g.active ? " active" : ""}`}
+                    onClick={() => handleSwitchGraph(g.name)}
+                    disabled={g.active}
+                  >
+                    <span className="graph-picker-item-name">{g.name}</span>
+                    <span className="graph-picker-item-stats">
+                      {g.entities}e / {g.relationships}r / {g.observations}o
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {state.stats && (
           <div className="title-bar-stats">
             <span>{state.stats.entity_count} entities</span>

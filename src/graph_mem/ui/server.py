@@ -63,6 +63,7 @@ async def create_app(
     storage: StorageBackend,
     search: HybridSearch,
     graph: GraphEngine | None = None,
+    db_path: str | None = None,
 ) -> web.Application:
     """Build the aiohttp Application with all routes and middleware."""
     app = web.Application(middlewares=[_error_middleware])
@@ -70,6 +71,8 @@ async def create_app(
     app["search"] = search
     if graph is not None:
         app["graph"] = graph
+    if db_path is not None:
+        app["db_path"] = db_path
 
     # Resolve frontend dir and stash for route setup
     app["frontend_dir"] = _resolve_frontend_dir()
@@ -137,7 +140,7 @@ async def start_server(
     search = HybridSearch(storage, embeddings)
 
     graph = GraphEngine(storage)
-    app = await create_app(storage, search, graph)
+    app = await create_app(storage, search, graph, db_path=resolved_db)
 
     runner = web.AppRunner(app)
     await runner.setup()

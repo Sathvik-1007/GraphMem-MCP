@@ -45,6 +45,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
   const initialFitDoneRef = useRef(false);
   const focusLockRef = useRef(false);
   const anchorIdRef = useRef<string | null>(null);
+  const focusTargetRef = useRef<string | null>(null);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
 
   // Drag state — separate clickStart (never mutated) from panLast (mutated for pan delta)
@@ -71,10 +72,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
       const engine = engineRef.current;
       const node = engine.nodes.find((n) => n.id === name);
       if (!node) return;
-      const canvas = canvasRef.current;
-      if (!canvas) return;
 
-      // Center view on the node with a comfortable zoom level
+      // Set continuous focus target — the animation loop will track it
+      focusTargetRef.current = name;
+
+      // Set initial view position + comfortable zoom
       viewRef.current = {
         x: -node.x,
         y: -node.y,
@@ -195,6 +197,24 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
       const engine = engineRef.current;
       engine.tick();
 
+      // ── Continuous focus tracking ──
+      // When a focusTarget is set, smoothly follow the node each frame
+      // so the view stays centered even while physics is settling.
+      const ft = focusTargetRef.current;
+      if (ft) {
+        const targetNode = engine.nodes.find((n) => n.id === ft);
+        if (targetNode) {
+          const view = viewRef.current;
+          // Lerp toward target for smooth following
+          const lerpFactor = 0.15;
+          view.x += (-targetNode.x - view.x) * lerpFactor;
+          view.y += (-targetNode.y - view.y) * lerpFactor;
+        } else {
+          // Node no longer exists (filtered out?) — stop tracking
+          focusTargetRef.current = null;
+        }
+      }
+
       const state: RenderState = {
         hoveredNode: hoveredRef.current,
         selectedNode: selectedRef.current,
@@ -224,6 +244,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
 
     function onWheel(e: WheelEvent) {
       e.preventDefault();
+      focusTargetRef.current = null; // User interaction cancels focus tracking
       const view = viewRef.current;
       const rect = canvas!.getBoundingClientRect();
       const mx = e.clientX - rect.left;
@@ -249,6 +270,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    focusTargetRef.current = null; // User interaction cancels focus tracking
 
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;

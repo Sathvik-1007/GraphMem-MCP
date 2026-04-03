@@ -128,3 +128,30 @@ export function deleteEntity(
 ): Promise<{ status: string; name: string }> {
   return del(`/entity/${encodeURIComponent(name)}`);
 }
+
+// ── Multi-graph operations ──
+
+export interface GraphInfo {
+  name: string;
+  file: string;
+  entities: number;
+  relationships: number;
+  observations: number;
+  active: boolean;
+}
+
+export interface GraphListResponse {
+  graphs: GraphInfo[];
+  active: string | null;
+  graphmem_dir: string;
+}
+
+export function fetchGraphs(): Promise<GraphListResponse> {
+  return request<GraphListResponse>("/graphs");
+}
+
+export function switchGraph(
+  name: string,
+): Promise<{ status: string; name: string; db_path: string }> {
+  return post("/graphs/switch", { name });
+}

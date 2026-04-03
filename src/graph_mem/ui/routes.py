@@ -1,11 +1,13 @@
 """API route handlers for the graph-mem visualisation UI.
 
-All endpoints are read-only (GET).  Handlers pull ``storage`` and ``search``
-from ``request.app`` — no direct database connections.
+All endpoints are read-only (GET) for graph data, with write endpoints
+for entity/relationship/observation management.  Handlers pull ``storage``
+and ``search`` from ``request.app`` — no direct database connections.
 """
 
 from __future__ import annotations
 
+import sqlite3
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
@@ -35,6 +37,8 @@ def setup_routes(app: web.Application) -> None:
     app.router.add_post("/api/observations", handle_create_observations)
     app.router.add_put("/api/entity/{name}", handle_update_entity)
     app.router.add_delete("/api/entity/{name}", handle_delete_entity)
+    app.router.add_get("/api/graphs", handle_list_graphs)
+    app.router.add_post("/api/graphs/switch", handle_switch_graph)
 
     # SPA static files — only if the frontend has been built
     frontend_dir: Path | None = app.get("frontend_dir")
@@ -480,6 +484,184 @@ async def handle_delete_entity(request: web.Request) -> web.Response:
         return web.json_response({"error": f"Entity '{name}' not found"}, status=404)
 
     return web.json_response({"status": "deleted", "name": name, "count": deleted})
+
+
+# ---------------------------------------------------------------------------
+# GET /api/graphs — List available named graphs
+# ---------------------------------------------------------------------------
+
+
+def _get_graphmem_dir(app: web.Application) -> Path | None:
+    """Return the .graphmem directory from app config, or None."""
+    from pathlib import Path as _Path
+
+    db_path = app.get("db_path")
+    if db_path:
+        p = _Path(str(db_path))
+        if p.parent.name == ".graphmem":
+            return p.parent
+    return None
+
+
+def _quick_db_counts(db_file: Path) -> dict[str, int]:
+    """Open a .db file briefly with sqlite3 to get entity/rel/obs counts."""
+    counts: dict[str, int] = {
+        "entities": 0,
+        "relationships": 0,
+        "observations": 0,
+    }
+    try:
+        conn = sqlite3.connect(str(db_file))
+        for table, key in [
+            ("entities", "entities"),
+            ("relationships", "relationships"),
+            ("observations", "observations"),
+        ]:
+            try:
+                row = conn.execute(
+                    f"SELECT COUNT(*) FROM {table}"
+                ).fetchone()
+                counts[key] = row[0] if row else 0
+            except sqlite3.OperationalError:
+                pass
+        conn.close()
+    except Exception:
+        pass
+    return counts
+
+
+async def handle_list_graphs(request: web.Request) -> web.Response:
+    """List all named graphs in the .graphmem directory."""
+    graphmem_dir = _get_graphmem_dir(request.app)
+    if graphmem_dir is None or not graphmem_dir.is_dir():
+        return web.json_response({"graphs": [], "active": None})
+
+    # Determine active graph name from current db_path
+    db_path = request.app.get("db_path", "")
+    from pathlib import Path as _Path
+
+    active_file = _Path(str(db_path)).name if db_path else ""
+    active_name = active_file.removesuffix(".db") if active_file else ""
+
+    graphs = []
+    for f in sorted(graphmem_dir.glob("*.db")):
+        name = f.stem
+        counts = _quick_db_counts(f)
+        graphs.append(
+            {
+                "name": name,
+                "file": f.name,
+                "entities": counts["entities"],
+                "relationships": counts["relationships"],
+                "observations": counts["observations"],
+                "active": (f.name == active_file),
+            }
+        )
+
+    return web.json_response(
+        {
+            "graphs": graphs,
+            "active": active_name,
+            "graphmem_dir": str(graphmem_dir),
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/graphs/switch — Switch to a different named graph
+# ---------------------------------------------------------------------------
+
+
+async def handle_switch_graph(request: web.Request) -> web.Response:
+    """Switch the active graph database.
+
+    Expects JSON body: {"name": "graph-name"} (without .db extension).
+    Reinitialises storage, search, and graph engines on the app.
+    """
+    graphmem_dir = _get_graphmem_dir(request.app)
+    if graphmem_dir is None:
+        return web.json_response(
+            {"error": "Cannot determine .graphmem directory"},
+            status=500,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    graph_name = body.get("name", "").strip()
+    if not graph_name:
+        return web.json_response(
+            {"error": "name is required"},
+            status=400,
+        )
+
+    # Sanitise: only alphanumeric, hyphens, underscores
+    import re
+
+    if not re.match(r"^[a-zA-Z0-9_-]+$", graph_name):
+        return web.json_response(
+            {"error": "Invalid graph name (use a-z, 0-9, hyphens, underscores)"},
+            status=400,
+        )
+
+    target_db = graphmem_dir / f"{graph_name}.db"
+    if not target_db.exists():
+        return web.json_response(
+            {"error": f"Graph '{graph_name}' not found"},
+            status=404,
+        )
+
+    # Close old storage
+    old_storage = request.app.get("storage")
+    if old_storage is not None:
+        try:
+            await old_storage.close()
+        except Exception as exc:
+            log.warning("Error closing old storage: %s", exc)
+
+    # Create new storage, graph, search engines
+    from graph_mem.graph.engine import GraphEngine
+    from graph_mem.semantic import EmbeddingEngine, HybridSearch
+    from graph_mem.storage import create_backend
+    from graph_mem.utils import load_config
+
+    config = load_config()
+    new_storage = create_backend(
+        config.backend_type,
+        db_path=str(target_db),
+    )
+    await new_storage.initialize()
+
+    embeddings = EmbeddingEngine(
+        model_name=config.embedding_model,
+        use_onnx=config.use_onnx,
+        device=config.embedding_device,
+        cache_size=config.cache_size,
+    )
+    try:
+        await embeddings.initialize(new_storage)
+    except Exception:
+        log.warning("Embedding engine unavailable after switch")
+
+    new_search = HybridSearch(new_storage, embeddings)
+    new_graph = GraphEngine(new_storage)
+
+    # Hot-swap on the app
+    request.app["storage"] = new_storage
+    request.app["search"] = new_search
+    request.app["graph"] = new_graph
+    request.app["db_path"] = str(target_db)
+
+    log.info("Switched to graph: %s (%s)", graph_name, target_db)
+    return web.json_response(
+        {
+            "status": "switched",
+            "name": graph_name,
+            "db_path": str(target_db),
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

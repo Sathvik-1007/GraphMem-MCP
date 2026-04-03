@@ -32,25 +32,28 @@ def _run_async(coro: Any) -> Any:
 def _resolve_db_path(
     db_path: str | None = None,
     project_dir: str | None = None,
+    graph_name: str | None = None,
 ) -> None:
     """Set GRAPHMEM_DB_PATH from explicit flags.
 
     Priority (highest wins):
     1. ``--db`` — explicit database file path
-    2. ``--project-dir`` — resolve ``<dir>/.graphmem/graph.db``
+    2. ``--project-dir`` + optional ``--graph`` — resolve ``<dir>/.graphmem/<name>.db``
     3. ``GRAPHMEM_DB_PATH`` environment variable (left untouched)
     4. Config default: ``.graphmem/graph.db`` relative to CWD
     """
     if db_path:
         os.environ["GRAPHMEM_DB_PATH"] = str(Path(db_path).resolve())
     elif project_dir:
-        resolved = Path(project_dir).resolve() / ".graphmem" / "graph.db"
+        db_name = f"{graph_name}.db" if graph_name else "graph.db"
+        resolved = Path(project_dir).resolve() / ".graphmem" / db_name
         os.environ["GRAPHMEM_DB_PATH"] = str(resolved)
 
 
 async def _open_db(
     db_path: str | None = None,
     project_dir: str | None = None,
+    graph_name: str | None = None,
 ) -> tuple[Any, Any]:
     """Open storage backend and return (StorageBackend, GraphEngine) for CLI commands.
 
@@ -62,7 +65,7 @@ async def _open_db(
     from graph_mem.graph import GraphEngine
     from graph_mem.storage import create_backend
 
-    _resolve_db_path(db_path, project_dir)
+    _resolve_db_path(db_path, project_dir, graph_name)
 
     config = load_config()
     storage = create_backend(config.backend_type, db_path=config.ensure_db_dir())
@@ -108,6 +111,12 @@ def cli() -> None:
     default=None,
     type=click.Path(exists=True, file_okay=False, resolve_path=True),
     help="Project root directory. Database stored at <dir>/.graphmem/graph.db.",
+)
+@click.option(
+    "--graph",
+    "graph_name",
+    default=None,
+    help="Named graph to use (resolves to <project-dir>/.graphmem/<name>.db).",
 )
 @click.option(
     "--host",
@@ -173,6 +182,7 @@ def server(
     transport: str,
     db_path: str | None,
     project_dir: str | None,
+    graph_name: str | None,
     host: str,
     port: int,
     embedding_model: str | None,
@@ -192,6 +202,7 @@ def server(
     Examples:
       graph-mem server
       graph-mem server --project-dir /my/project
+      graph-mem server --project-dir /my/project --graph harry-potter
       graph-mem server --embedding-model sentence-transformers/all-mpnet-base-v2
       graph-mem server --no-onnx --embedding-device cuda --log-level DEBUG
     """
@@ -212,7 +223,7 @@ def server(
         # Only set env vars for options that were explicitly provided — this
         # preserves the precedence: CLI flag > env var > Config default.
         os.environ["GRAPHMEM_TRANSPORT"] = transport
-        _resolve_db_path(db_path, project_dir)
+        _resolve_db_path(db_path, project_dir, graph_name)
 
         if embedding_model is not None:
             os.environ["GRAPHMEM_EMBEDDING_MODEL"] = embedding_model
@@ -334,13 +345,19 @@ def install(agent: str, scope: str, project_dir: str | None, domain: str) -> Non
     type=click.Path(exists=True, file_okay=False, resolve_path=True),
     help="Project root directory. Database stored at <dir>/.graphmem/graph.db.",
 )
-def init(db_path: str | None, project_dir: str | None) -> None:
+@click.option(
+    "--graph",
+    "graph_name",
+    default=None,
+    help="Named graph to use (resolves to <project-dir>/.graphmem/<name>.db).",
+)
+def init(db_path: str | None, project_dir: str | None, graph_name: str | None) -> None:
     """Initialize a .graphmem directory and database."""
 
     async def _init() -> None:
         from graph_mem.storage import create_backend
 
-        _resolve_db_path(db_path, project_dir)
+        _resolve_db_path(db_path, project_dir, graph_name)
 
         config = load_config()
         resolved = config.ensure_db_dir()
@@ -382,17 +399,28 @@ def init(db_path: str | None, project_dir: str | None) -> None:
     help="Project root directory containing .graphmem/graph.db.",
 )
 @click.option(
+    "--graph",
+    "graph_name",
+    default=None,
+    help="Named graph to use (resolves to <project-dir>/.graphmem/<name>.db).",
+)
+@click.option(
     "--json",
     "as_json",
     is_flag=True,
     default=False,
     help="Output raw JSON instead of formatted text.",
 )
-def status(db_path: str | None, project_dir: str | None, as_json: bool) -> None:
+def status(
+    db_path: str | None,
+    project_dir: str | None,
+    graph_name: str | None,
+    as_json: bool,
+) -> None:
     """Show graph statistics."""
 
     async def _status() -> dict[str, Any]:
-        storage, graph = await _open_db(db_path, project_dir)
+        storage, graph = await _open_db(db_path, project_dir, graph_name)
         try:
             result: dict[str, Any] = await graph.get_stats()
             result["schema_version"] = await storage.get_schema_version()
@@ -452,6 +480,12 @@ def status(db_path: str | None, project_dir: str | None, as_json: bool) -> None:
     help="Project root directory containing .graphmem/graph.db.",
 )
 @click.option(
+    "--graph",
+    "graph_name",
+    default=None,
+    help="Named graph to use (resolves to <project-dir>/.graphmem/<name>.db).",
+)
+@click.option(
     "--format",
     "fmt",
     default="json",
@@ -469,13 +503,14 @@ def status(db_path: str | None, project_dir: str | None, as_json: bool) -> None:
 def export(
     db_path: str | None,
     project_dir: str | None,
+    graph_name: str | None,
     fmt: str,
     output_path: str | None,
 ) -> None:
     """Export all graph data."""
 
     async def _export() -> dict[str, Any]:
-        storage, graph = await _open_db(db_path, project_dir)
+        storage, graph = await _open_db(db_path, project_dir, graph_name)
         try:
             entities = await graph.list_entities(limit=1_000_000)
             all_relationships: list[dict[str, Any]] = []
@@ -570,7 +605,15 @@ def export(
     type=click.Path(exists=True, file_okay=False, resolve_path=True),
     help="Project root directory. Database stored at <dir>/.graphmem/graph.db.",
 )
-def import_data(input_file: str, db_path: str | None, project_dir: str | None) -> None:
+@click.option(
+    "--graph",
+    "graph_name",
+    default=None,
+    help="Named graph to use (resolves to <project-dir>/.graphmem/<name>.db).",
+)
+def import_data(
+    input_file: str, db_path: str | None, project_dir: str | None, graph_name: str | None
+) -> None:
     """Import graph data from a JSON file."""
 
     async def _import() -> dict[str, int]:
@@ -582,7 +625,7 @@ def import_data(input_file: str, db_path: str | None, project_dir: str | None) -
         except json.JSONDecodeError as exc:
             raise GraphMemError(f"Invalid JSON in {input_file}: {exc}") from exc
 
-        storage, graph = await _open_db(db_path, project_dir)
+        storage, graph = await _open_db(db_path, project_dir, graph_name)
         try:
             counts: dict[str, int] = {"entities": 0, "relationships": 0, "observations": 0}
 
@@ -726,11 +769,17 @@ def import_data(input_file: str, db_path: str | None, project_dir: str | None) -
     type=click.Path(exists=True, file_okay=False, resolve_path=True),
     help="Project root directory containing .graphmem/graph.db.",
 )
-def validate(db_path: str | None, project_dir: str | None) -> None:
+@click.option(
+    "--graph",
+    "graph_name",
+    default=None,
+    help="Named graph to use (resolves to <project-dir>/.graphmem/<name>.db).",
+)
+def validate(db_path: str | None, project_dir: str | None, graph_name: str | None) -> None:
     """Validate database integrity."""
 
     async def _validate() -> list[str]:
-        storage, _graph = await _open_db(db_path, project_dir)
+        storage, _graph = await _open_db(db_path, project_dir, graph_name)
         issues: list[str] = []
         try:
             # 1. SQLite integrity check
@@ -825,15 +874,22 @@ def validate(db_path: str | None, project_dir: str | None) -> None:
     type=click.Path(exists=True, file_okay=False),
     help="Project directory containing .graphmem/.",
 )
+@click.option(
+    "--graph",
+    "graph_name",
+    default=None,
+    help="Named graph to use (resolves to <project-dir>/.graphmem/<name>.db).",
+)
 def ui(
     port: int,
     host: str,
     no_open: bool,
     db_path: str | None,
     project_dir: str | None,
+    graph_name: str | None,
 ) -> None:
     """Launch the graph visualisation UI in your browser."""
-    _resolve_db_path(db_path, project_dir)
+    _resolve_db_path(db_path, project_dir, graph_name)
 
     try:
         from graph_mem.ui.server import start_server

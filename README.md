@@ -229,6 +229,17 @@ graph-mem exposes **19 MCP tools** -- ten for writing, eight for reading, and on
 |------|-------------|
 | `open_dashboard` | Launch interactive graph visualisation UI and return its URL |
 
+### Multi-Graph Tools (4)
+
+| Tool | Description |
+|------|-------------|
+| `list_graphs` | List all named graphs in the `.graphmem/` directory with entity/relationship/observation counts |
+| `create_graph` | Create a new named graph (`.graphmem/<name>.db`) |
+| `switch_graph` | Switch the active graph — hot-swaps storage, search, and graph engines |
+| `delete_graph` | Delete a named graph (cannot delete the currently active graph) |
+
+> **Multi-graph storage**: Each named graph is a separate SQLite database in `.graphmem/`. The default graph is `graph.db`. Use `--graph <name>` on CLI commands to target a specific graph.
+
 ---
 
 ## Architecture
@@ -363,6 +374,7 @@ graph-mem server                          # stdio transport (default)
 graph-mem server --transport sse          # SSE transport
 graph-mem server --db /path/to/graph.db   # custom database path
 graph-mem server --project-dir /my/project  # store memory in <dir>/.graphmem/
+graph-mem server --project-dir /my/project --graph harry-potter  # use named graph
 
 # Embedding customization
 graph-mem server --embedding-model sentence-transformers/all-mpnet-base-v2
@@ -381,6 +393,7 @@ All server options:
 | `--transport` | `stdio`, `sse`, or `streamable-http` | `stdio` |
 | `--db` | Path to SQLite database file | `.graphmem/graph.db` |
 | `--project-dir` | Project root; DB at `<dir>/.graphmem/graph.db` | CWD |
+| `--graph` | Named graph (resolves to `<dir>/.graphmem/<name>.db`) | `graph` |
 | `--host` | Bind address (SSE/HTTP only) | `127.0.0.1` |
 | `--port` | Port (SSE/HTTP only) | `8080` |
 | `--embedding-model` | HuggingFace model ID for embeddings | `all-MiniLM-L6-v2` |
@@ -406,15 +419,19 @@ Supported agents: `claude`, `opencode`, `cursor`, `windsurf`, `codex`, `gemini`,
 ```bash
 graph-mem init                            # create .graphmem/ directory
 graph-mem init --project-dir /my/project  # create in specific directory
+graph-mem init --graph research           # create a named graph
 graph-mem status                          # print graph statistics
 graph-mem status --json                   # graph statistics as JSON
+graph-mem status --graph research         # status of a named graph
 graph-mem export --format json            # export entire graph
 graph-mem export --output backup.json     # export to file
 graph-mem import graph.json               # import graph from file
 graph-mem validate                        # run integrity checks
 ```
 
-All management commands accept `--db` and `--project-dir` for targeting a specific database.
+All management commands accept `--db`, `--project-dir`, and `--graph` for targeting a specific database.
+
+**Multi-graph support**: Use `--graph <name>` to work with named graphs stored as `.graphmem/<name>.db`. Without `--graph`, commands target the default `graph.db`. The MCP tools `list_graphs`, `create_graph`, `switch_graph`, and `delete_graph` provide runtime graph management for agents.
 
 ### Graph Visualisation UI
 
