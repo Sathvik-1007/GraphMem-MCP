@@ -173,6 +173,9 @@ export default function App() {
         theme={theme}
         onToggleTheme={toggleTheme}
         onExpandChange={setSidebarExpanded}
+        selectedEntityName={state.selectedEntity?.name ?? null}
+        onDeleteEntity={handleDeleteEntity}
+        onUpdateEntity={handleUpdateEntity}
       />
       <DetailPanel
         entity={state.selectedEntity}

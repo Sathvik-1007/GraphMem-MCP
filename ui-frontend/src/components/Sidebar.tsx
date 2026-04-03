@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import type { PhysicsConfig } from "../engine/ForceEngine";
 import { DEFAULT_PHYSICS } from "../engine/ForceEngine";
 import { entityColor } from "../utils/colors";
@@ -67,9 +67,17 @@ function IconChevronLeft() {
   );
 }
 
+function IconManage() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+    </svg>
+  );
+}
+
 // ── Types ──
 
-type Tab = "search" | "filter" | "add" | "settings";
+type Tab = "search" | "filter" | "add" | "settings" | "manage";
 
 export interface SidebarProps {
   // Search
@@ -100,6 +108,10 @@ export interface SidebarProps {
   onToggleTheme: () => void;
   // Sidebar expand state callback
   onExpandChange?: (expanded: boolean) => void;
+  // Manage entity
+  selectedEntityName: string | null;
+  onDeleteEntity: (name: string) => Promise<void>;
+  onUpdateEntity: (name: string, fields: { description?: string; entity_type?: string }) => Promise<void>;
 }
 
 export default function Sidebar({
@@ -123,6 +135,9 @@ export default function Sidebar({
   theme,
   onToggleTheme,
   onExpandChange,
+  selectedEntityName,
+  onDeleteEntity,
+  onUpdateEntity,
 }: SidebarProps) {
   const [activeTab, setActiveTab] = useState<Tab | null>(null);
   const expanded = activeTab !== null;
@@ -148,6 +163,7 @@ export default function Sidebar({
           <SidebarIconBtn icon={<IconSearch />} active={activeTab === "search"} onClick={() => toggleTab("search")} title="Search" />
           <SidebarIconBtn icon={<IconFilter />} active={activeTab === "filter"} onClick={() => toggleTab("filter")} title="Filter" />
           <SidebarIconBtn icon={<IconPlus />} active={activeTab === "add"} onClick={() => toggleTab("add")} title="Add Entity" />
+          <SidebarIconBtn icon={<IconManage />} active={activeTab === "manage"} onClick={() => toggleTab("manage")} title="Manage Entities" />
           <SidebarIconBtn icon={<IconGear />} active={activeTab === "settings"} onClick={() => toggleTab("settings")} title="Settings" />
           <div style={{ flex: 1 }} />
           <SidebarIconBtn
@@ -196,6 +212,14 @@ export default function Sidebar({
             )}
             {activeTab === "add" && (
               <AddEntityPanel onAdd={onAddEntity} onAddRelationship={onAddRelationship} graphEntities={graphEntities} />
+            )}
+            {activeTab === "manage" && (
+              <ManagePanel
+                graphEntities={graphEntities}
+                selectedEntityName={selectedEntityName}
+                onDelete={onDeleteEntity}
+                onUpdate={onUpdateEntity}
+              />
             )}
             {activeTab === "settings" && (
               <SettingsPanel physics={physics} onChange={onPhysicsChange} />
@@ -740,6 +764,167 @@ function PhysicsSlider({
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
       />
+    </div>
+  );
+}
+
+// ── Manage Panel ──
+
+function ManagePanel({
+  graphEntities,
+  selectedEntityName,
+  onDelete,
+  onUpdate,
+}: {
+  graphEntities: GraphEntity[];
+  selectedEntityName: string | null;
+  onDelete: (name: string) => Promise<void>;
+  onUpdate: (name: string, fields: { description?: string; entity_type?: string }) => Promise<void>;
+}) {
+  const [chosen, setChosen] = useState(selectedEntityName ?? "");
+  const [editType, setEditType] = useState("");
+  const [editDesc, setEditDesc] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  // Sync dropdown when selectedEntityName changes
+  useEffect(() => {
+    if (selectedEntityName) {
+      setChosen(selectedEntityName);
+      setConfirmDelete(false);
+      setEditing(false);
+      setFeedback(null);
+    }
+  }, [selectedEntityName]);
+
+  // When chosen entity changes, prefill edit fields
+  useEffect(() => {
+    const ent = graphEntities.find((e) => e.name === chosen);
+    if (ent) {
+      setEditType(ent.entity_type ?? "");
+      setEditDesc(ent.description ?? "");
+    }
+  }, [chosen, graphEntities]);
+
+  const sorted = useMemo(
+    () => [...graphEntities].sort((a, b) => a.name.localeCompare(b.name)),
+    [graphEntities],
+  );
+
+  const handleDelete = async () => {
+    if (!chosen) return;
+    setBusy(true);
+    try {
+      await onDelete(chosen);
+      setFeedback({ ok: true, msg: `Deleted "${chosen}"` });
+      setChosen("");
+      setConfirmDelete(false);
+    } catch {
+      setFeedback({ ok: false, msg: "Delete failed" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleUpdate = async () => {
+    if (!chosen) return;
+    setBusy(true);
+    try {
+      const fields: { description?: string; entity_type?: string } = {};
+      if (editDesc) fields.description = editDesc;
+      if (editType) fields.entity_type = editType;
+      await onUpdate(chosen, fields);
+      setFeedback({ ok: true, msg: `Updated "${chosen}"` });
+      setEditing(false);
+    } catch {
+      setFeedback({ ok: false, msg: "Update failed" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="sidebar-section">
+      <div className="sidebar-heading">Manage Entities</div>
+
+      {/* Entity selector */}
+      <label style={{ fontSize: 11, fontWeight: 500, marginBottom: 4, display: "block" }}>Entity</label>
+      <select
+        className="sidebar-input"
+        value={chosen}
+        onChange={(e) => { setChosen(e.target.value); setConfirmDelete(false); setEditing(false); setFeedback(null); }}
+        style={{ width: "100%", marginBottom: 10 }}
+      >
+        <option value="">-- select --</option>
+        {sorted.map((e) => (
+          <option key={e.name} value={e.name}>
+            {e.name} ({e.entity_type})
+          </option>
+        ))}
+      </select>
+
+      {chosen && (
+        <>
+          {/* Action buttons */}
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <button
+              className="btn btn--danger"
+              disabled={busy}
+              onClick={() => { if (confirmDelete) void handleDelete(); else setConfirmDelete(true); }}
+              style={{ flex: 1 }}
+            >
+              {confirmDelete ? "Confirm delete?" : "Delete"}
+            </button>
+            <button
+              className="btn btn--secondary"
+              disabled={busy}
+              onClick={() => { setEditing(!editing); setConfirmDelete(false); }}
+              style={{ flex: 1 }}
+            >
+              {editing ? "Cancel" : "Edit"}
+            </button>
+          </div>
+
+          {/* Edit form */}
+          {editing && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 500, display: "block", marginBottom: 2 }}>Type</label>
+                <input
+                  className="sidebar-input"
+                  value={editType}
+                  onChange={(e) => setEditType(e.target.value)}
+                  placeholder="entity type"
+                  style={{ width: "100%" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 500, display: "block", marginBottom: 2 }}>Description</label>
+                <textarea
+                  className="sidebar-input"
+                  value={editDesc}
+                  onChange={(e) => setEditDesc(e.target.value)}
+                  placeholder="description"
+                  rows={3}
+                  style={{ width: "100%", resize: "vertical" }}
+                />
+              </div>
+              <button className="btn btn--primary" disabled={busy} onClick={() => void handleUpdate()}>
+                {busy ? "Saving..." : "Save changes"}
+              </button>
+            </div>
+          )}
+
+          {/* Feedback */}
+          {feedback && (
+            <div style={{ fontSize: 11, marginTop: 8, color: feedback.ok ? "var(--color-success, #22c55e)" : "var(--color-danger)" }}>
+              {feedback.msg}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

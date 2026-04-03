@@ -9,7 +9,7 @@
 
 import type { SimNode, SimEdge } from "./ForceEngine";
 import { nodeRadius } from "./ForceEngine";
-import { hexToLightFill, hexToGlow } from "../utils/colors";
+import { hexToLightFill } from "../utils/colors";
 
 export interface ViewTransform {
   /** Pan offset X (world coords) */
@@ -230,27 +230,33 @@ function drawNodes(
 
     const glowR = r * (isHovered || isSelected ? 4 : nd.degree > 1 ? 2.8 : 1.5);
 
-    // Glow halo — reduced on light theme
-    if (nd.degree > 0 || isHovered || isSelected) {
+    // Light mode: colored halo border instead of shadow/glow
+    // Dark mode: radial glow halo
+    if (light) {
+      // No radial gradient shadow — just skip the glow in light mode
+    } else if (nd.degree > 0 || isHovered || isSelected) {
       const grd = ctx.createRadialGradient(nd.x, nd.y, r * 0.3, nd.x, nd.y, glowR);
-      if (light) {
-        // Lighter, subtler glow for light mode
-        grd.addColorStop(0, hexToGlow(nd.strokeColor, 0.18));
-        grd.addColorStop(1, "rgba(0,0,0,0)");
-      } else {
-        grd.addColorStop(0, nd.glowColor);
-        grd.addColorStop(1, "rgba(0,0,0,0)");
-      }
+      grd.addColorStop(0, nd.glowColor);
+      grd.addColorStop(1, "rgba(0,0,0,0)");
       ctx.fillStyle = grd;
       ctx.beginPath();
       ctx.arc(nd.x, nd.y, glowR, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // Body — light mode uses pastel fill
+    // Body — light mode uses pastel fill with colored border
     ctx.fillStyle = light ? hexToLightFill(nd.strokeColor) : nd.fillColor;
-    ctx.strokeStyle = isHovered ? labelActiveColor : isSelected ? labelActiveColor : nd.strokeColor;
-    ctx.lineWidth = ((isHovered || isSelected) ? 2.5 : 1.5) / view.zoom;
+    if (light) {
+      // Light mode: light border default, heavy colored border on hover/select
+      ctx.strokeStyle = nd.strokeColor;
+      ctx.lineWidth = ((isHovered || isSelected) ? 3.0 : 1.2) / view.zoom;
+      if (isHovered || isSelected) {
+        ctx.globalAlpha = isDimmed ? 0.2 : 1;
+      }
+    } else {
+      ctx.strokeStyle = isHovered ? labelActiveColor : isSelected ? labelActiveColor : nd.strokeColor;
+      ctx.lineWidth = ((isHovered || isSelected) ? 2.5 : 1.5) / view.zoom;
+    }
     ctx.beginPath();
     ctx.arc(nd.x, nd.y, r, 0, Math.PI * 2);
     ctx.fill();

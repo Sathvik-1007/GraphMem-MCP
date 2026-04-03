@@ -80,8 +80,8 @@ export function hexToLightFill(hex: string): string {
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
-  // Blend only 30% toward white (was 65%) — keeps colors vivid
-  return `rgb(${Math.round(r + (255 - r) * 0.30)},${Math.round(g + (255 - g) * 0.30)},${Math.round(b + (255 - b) * 0.30)})`;
+  // Blend only 10% toward white — keeps colors vivid and solid on light backgrounds
+  return `rgb(${Math.round(r + (255 - r) * 0.10)},${Math.round(g + (255 - g) * 0.10)},${Math.round(b + (255 - b) * 0.10)})`;
 }
 
 /** Get canvas glow palette for an entity type */

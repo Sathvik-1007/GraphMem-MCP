@@ -365,9 +365,10 @@ function highlightEntities(
     .sort((a, b) => b.length - a.length);
   if (names.length === 0) return text;
 
-  // Build a regex that matches any entity name (case-insensitive, word boundary)
+  // Build a regex that matches any entity name (case-insensitive)
+  // No word boundaries — multi-word names like "The Forgotten Story" need substring matching
   const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const pattern = new RegExp(`\\b(${escaped.join("|")})\\b`, "gi");
+  const pattern = new RegExp(`(${escaped.join("|")})`, "gi");
 
   const parts: ReactNode[] = [];
   let lastIndex = 0;
