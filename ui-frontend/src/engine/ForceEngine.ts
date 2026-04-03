@@ -242,6 +242,7 @@ export class ForceEngine {
   reheat(): void {
     this.alpha = 1.0;
     for (const nd of this.nodes) {
+      if (nd.pinned) continue;
       nd.vx = (Math.random() - 0.5) * 8;
       nd.vy = (Math.random() - 0.5) * 8;
     }

@@ -44,6 +44,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
   const hoveredRef = useRef<SimNode | null>(null);
   const initialFitDoneRef = useRef(false);
   const focusLockRef = useRef(false);
+  const anchorIdRef = useRef<string | null>(null);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
 
   // Drag state — separate clickStart (never mutated) from panLast (mutated for pan delta)
@@ -126,6 +127,28 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
           weight: r.weight,
         });
       }
+    }
+
+    // ── Anchor the most-connected node at origin ──
+    // This stabilizes the coordinate system: the highest-degree node sits at (0,0),
+    // all other nodes settle relative to it via physics. This makes focusNode reliable
+    // because world coordinates are stable, and handleCenter naturally re-centers on it.
+    if (engine.nodes.length > 0) {
+      let anchorIdx = 0;
+      let maxDeg = engine.nodes[0]!.degree;
+      for (let i = 1; i < engine.nodes.length; i++) {
+        if (engine.nodes[i]!.degree > maxDeg) {
+          maxDeg = engine.nodes[i]!.degree;
+          anchorIdx = i;
+        }
+      }
+      const anchor = engine.nodes[anchorIdx]!;
+      anchor.x = 0;
+      anchor.y = 0;
+      anchor.vx = 0;
+      anchor.vy = 0;
+      anchor.pinned = true;
+      anchorIdRef.current = anchor.id;
     }
 
     engine.reheat();
@@ -329,8 +352,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
     );
 
     if (drag.node) {
-      // Release node pin (unless user double-clicked to pin)
-      drag.node.pinned = false;
+      // Release node pin — but keep anchor node pinned
+      if (drag.node.id !== anchorIdRef.current) {
+        drag.node.pinned = false;
+      }
 
       // Click (not drag) → select
       if (dist < 4) {
@@ -350,7 +375,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
     setTooltip(null);
     const drag = dragRef.current;
     if (drag.node) {
-      drag.node.pinned = false;
+      if (drag.node.id !== anchorIdRef.current) {
+        drag.node.pinned = false;
+      }
     }
     dragRef.current = { node: null, panning: false, clickStartX: 0, clickStartY: 0, panLastX: 0, panLastY: 0 };
     const canvas = canvasRef.current;
