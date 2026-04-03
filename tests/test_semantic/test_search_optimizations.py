@@ -122,7 +122,13 @@ async def test_rrf_alpha_default_equal_weight(search_env):
     fts = {"a": 0.05, "c": 0.1}
     result = HybridSearch._rrf_fuse(vec, fts, alpha=0.5)
     scores = dict(result)
-    assert scores["a"] == pytest.approx(0.5 * 0.1 + 0.5 * 0.05)  # both channels
+    # After normalization, "a" has the highest raw score so it normalizes to 1.0.
+    # raw_a = 0.5*0.1 + 0.5*0.05 = 0.075
+    # raw_b = 0.5*0.05 = 0.025
+    # raw_c = 0.5*0.1 = 0.05
+    # max = 0.075 → a=1.0, c=0.05/0.075≈0.6667, b=0.025/0.075≈0.3333
+    assert scores["a"] == pytest.approx(1.0)
+    assert scores["c"] > scores["b"]  # c ranks above b
 
 
 async def test_rrf_alpha_zero_fts_only(search_env):
@@ -132,7 +138,7 @@ async def test_rrf_alpha_zero_fts_only(search_env):
     result = HybridSearch._rrf_fuse(vec, fts, alpha=0.0)
     scores = dict(result)
     assert scores.get("a", 0.0) == 0.0  # vec result zeroed out
-    assert scores["b"] == pytest.approx(0.1)  # fts result full weight
+    assert scores["b"] == pytest.approx(1.0)  # fts result normalized to 1.0
 
 
 async def test_rrf_alpha_one_vector_only(search_env):
@@ -141,7 +147,7 @@ async def test_rrf_alpha_one_vector_only(search_env):
     fts = {"b": 0.1}
     result = HybridSearch._rrf_fuse(vec, fts, alpha=1.0)
     scores = dict(result)
-    assert scores["a"] == pytest.approx(0.1)
+    assert scores["a"] == pytest.approx(1.0)  # normalized to 1.0
     assert scores.get("b", 0.0) == 0.0
 
 
@@ -174,3 +180,67 @@ async def test_obs_boost_zero_factor(search_env):
     await graph.add_entities([Entity(name="APIService", entity_type="module", description="API")])
     results = await search.search_entities("anything", obs_boost_factor=0.0)
     assert isinstance(results, list)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# min_score threshold
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def test_min_score_default_no_filtering(search_env):
+    """Default min_score=0.0 returns all results (no filtering)."""
+    _db, graph, search = search_env
+    await graph.add_entities([Entity(name="Alpha", entity_type="concept")])
+    await graph.add_entities([Entity(name="Beta", entity_type="concept")])
+    results = await search.search_entities("Alpha")
+    # With default min_score=0.0, at least "Alpha" should appear
+    assert len(results) >= 1
+
+
+async def test_min_score_filters_low_relevance(search_env):
+    """min_score=1.0 keeps only the top-scored result (score=1.0 after normalization)."""
+    _db, graph, search = search_env
+    await graph.add_entities([Entity(name="Alpha Centauri", entity_type="star")])
+    await graph.add_entities([Entity(name="Beta Pictoris", entity_type="star")])
+    results = await search.search_entities("Alpha Centauri", min_score=1.0)
+    # With normalization, only the best match (score=1.0) survives
+    if results:
+        assert all(r["relevance_score"] >= 1.0 for r in results)
+
+
+async def test_min_score_entity_returns_empty_on_high_threshold(search_env):
+    """min_score above 1.0 returns nothing since max normalized score is 1.0."""
+    _db, graph, search = search_env
+    await graph.add_entities([Entity(name="TestEntity", entity_type="concept")])
+    results = await search.search_entities("TestEntity", min_score=1.1)
+    assert results == []
+
+
+async def test_min_score_observations(search_env):
+    """min_score works on search_observations too."""
+    _db, graph, search = search_env
+    await graph.add_entities([Entity(name="Obs Host", entity_type="concept")])
+    await graph.add_observations("Obs Host", [Observation.pending("Important fact about physics")])
+    results = await search.search_observations("physics", min_score=0.0)
+    assert isinstance(results, list)
+
+
+async def test_min_score_observations_high_threshold(search_env):
+    """High min_score filters out low-relevance observations."""
+    _db, graph, search = search_env
+    await graph.add_entities([Entity(name="Obs Host2", entity_type="concept")])
+    await graph.add_observations("Obs Host2", [Observation.pending("Random note")])
+    results = await search.search_observations("completely unrelated query xyz", min_score=1.1)
+    assert results == []
+
+
+async def test_rrf_fuse_score_normalization():
+    """Verify _rrf_fuse normalizes scores to [0, 1]."""
+    vec = {"a": 0.2, "b": 0.1, "c": 0.05}
+    fts = {"a": 0.1, "d": 0.15}
+    result = HybridSearch._rrf_fuse(vec, fts, alpha=0.5)
+    scores = dict(result)
+    # Max score should be 1.0 after normalization
+    assert max(scores.values()) == pytest.approx(1.0)
+    # All scores should be in [0, 1]
+    assert all(0.0 <= s <= 1.0 for s in scores.values())

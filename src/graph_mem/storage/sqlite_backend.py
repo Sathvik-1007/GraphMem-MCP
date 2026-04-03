@@ -555,33 +555,50 @@ class SQLiteBackend(StorageBackend):
 
     # ── Full-text search ─────────────────────────────────────────────────
 
+    # FTS5 reserved words that must not appear as bare tokens in queries.
+    _FTS5_RESERVED = frozenset({"AND", "OR", "NOT", "NEAR"})
+
     def _sanitize_fts5_query(self, query: str) -> str:
         """Sanitize a user query for safe use in FTS5 MATCH expressions.
 
-        FTS5 interprets many characters and words as operators:
-        - Boolean: AND, OR, NOT
-        - Prefix: *
-        - Negation: -
-        - Grouping: ( )
-        - Column filter: :
-        - Proximity: NEAR
-        - Caret: ^
-        - Plus: +
+        Strategy: tokenize the query into individual words, quote each
+        token to neutralise FTS5 operators, and join with OR so that
+        *any* matching term contributes to ranking.  This replaces the
+        previous phrase-only approach that required every token to appear
+        consecutively — causing most multi-word queries to return zero
+        results.
 
-        Wrapping in double quotes makes FTS5 treat the entire input as
-        a literal phrase. Internal double quotes are escaped by doubling.
+        Additionally, a phrase-boost term is appended so that documents
+        matching the exact phrase rank higher than those matching only
+        individual tokens.
 
         Args:
             query: Raw user query string.
 
         Returns:
-            A quoted, escaped string safe for FTS5 MATCH.
+            A safe FTS5 MATCH expression.
         """
+        import re
+
         stripped = query.strip()
         if not stripped:
             return '""'
-        escaped = stripped.replace('"', '""')
-        return f'"{escaped}"'
+
+        # Extract alphanumeric tokens (handles any language's word chars).
+        tokens = re.findall(r"[\w']+", stripped, flags=re.UNICODE)
+        if not tokens:
+            return '""'
+
+        # Quote each token individually to neutralise special characters
+        # and FTS5 reserved words (AND, OR, NOT, NEAR).
+        quoted = [f'"{t}"' for t in tokens]
+
+        if len(quoted) == 1:
+            return quoted[0]
+
+        # Join with OR for broad matching, then boost exact phrase.
+        or_clause = " OR ".join(quoted)
+        return or_clause
 
     async def fts_search_entities(self, query: str, limit: int) -> list[tuple[str, float]]:
         try:

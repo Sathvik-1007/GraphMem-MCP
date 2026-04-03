@@ -1,11 +1,11 @@
-# graph-mem
+# GRAPH MEM
 
-> Persistent knowledge graph memory for LLM-powered CLI agents
+> User-driven persistent knowledge graph memory for LLM-powered CLI agents
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org)
 
-**No API keys. No cloud provider. No external services.** graph-mem is a fully local MCP server that plugs into any MCP-compatible agent as a standard tool provider. Install it, add it to your MCP config, and your agent immediately gains persistent memory -- nothing else required.
+**No API keys. No cloud provider. No external services.** GRAPH MEM is a fully local MCP server that plugs into any MCP-compatible agent as a standard tool provider. Install it, add it to your MCP config, and your agent immediately gains user-driven persistent memory -- you decide what to store, when to search, and how to structure your knowledge graph. Nothing else required.
 
 ### Supported Agents
 
@@ -43,7 +43,7 @@
 
 ## What is this?
 
-LLM-powered coding agents forget everything between sessions. They re-read files, re-discover architecture, and repeat mistakes. **graph-mem** fixes this by giving any MCP-compatible agent a persistent, per-project knowledge graph that combines graph storage, semantic vector search, and multi-hop traversal. It runs entirely locally -- no API provider accounts, no cloud dependencies, no Docker containers. Just `pip install graph-mem` and go.
+LLM-powered coding agents forget everything between sessions. They re-read files, re-discover architecture, and repeat mistakes. **GRAPH MEM** fixes this by giving any MCP-compatible agent a persistent, per-project knowledge graph that combines graph storage, semantic vector search, and multi-hop traversal. It's user-driven -- you tell your agent what to remember, and the graph builds organically from your interactions. It runs entirely locally -- no API provider accounts, no cloud dependencies, no Docker containers. Just `pip install graph-mem` and go.
 
 ### Why a graph, not just a vector store?
 
@@ -245,91 +245,45 @@ graph-mem exposes **23 MCP tools** -- ten for writing, eight for reading, four f
 ## Architecture
 
 ```mermaid
-graph TB
-    subgraph Agents["Any MCP-Compatible Agent"]
-        A1["Claude Code"]
-        A2["OpenCode"]
-        A3["Cursor"]
-        A4["Gemini CLI"]
-        A5["19 others..."]
+graph TD
+    Agent[MCP-Compatible Agent] --> Transport
+
+    subgraph Transport
+        STDIO[stdio]
+        SSE[SSE]
+        HTTP[streamable-http]
     end
 
-    subgraph Transport["MCP Transport Layer"]
-        STDIO["stdio<br/>(default)"]
-        SSE["SSE"]
-        HTTP["streamable-http"]
+    Transport --> Tools
+
+    subgraph Tools[GRAPH MEM Server — 23 MCP Tools]
+        Write[Write · 10 tools]
+        Read[Read · 8 tools]
+        Graph[Multi-Graph · 4 tools]
+        UI[Dashboard · 1 tool]
     end
 
-    subgraph Server["graph-mem Server"]
-        direction TB
-        subgraph WriteTools["Write Tools (10)"]
-            WT1["add_entities"]
-            WT2["add_relationships"]
-            WT3["add_observations"]
-            WT4["update_entity"]
-            WT5["update_relationship"]
-            WT6["update_observation"]
-            WT7["delete_entities"]
-            WT8["delete_relationships"]
-            WT9["delete_observations"]
-            WT10["merge_entities"]
-        end
-        subgraph ReadTools["Read Tools (8)"]
-            RT1["search_nodes"]
-            RT2["search_observations"]
-            RT3["find_connections"]
-            RT4["get_entity"]
-            RT5["list_entities"]
-            RT6["read_graph"]
-            RT7["get_subgraph"]
-            RT8["find_paths"]
-        end
-        subgraph Utility["Utility (1)"]
-            UT1["open_dashboard"]
-        end
+    Write --> Engines
+    Read --> Engines
+
+    subgraph Engines
+        GE[GraphEngine]
+        SE[HybridSearch]
+        EE[EmbeddingEngine]
+        GT[GraphTraversal]
+        EM[EntityMerger]
     end
 
-    subgraph Engines["Core Engines"]
-        GE["GraphEngine<br/>CRUD + resolution"]
-        SE["HybridSearch<br/>vector + FTS5 + RRF"]
-        EE["EmbeddingEngine<br/>sentence-transformers"]
-        GT["GraphTraversal<br/>BFS + pathfinding"]
-        EM["EntityMerger<br/>dedup + consolidate"]
+    Engines --> Storage
+
+    subgraph Storage[SQLite Storage]
+        DB[SQLite WAL]
+        VEC[sqlite-vec]
+        FTS[FTS5]
     end
 
-    subgraph Storage["SQLite Storage Layer"]
-        DB["SQLite WAL<br/>.graphmem/graph.db"]
-        VEC["sqlite-vec<br/>vector index"]
-        FTS["FTS5<br/>full-text index"]
-        MIG["Versioned migrations"]
-    end
-
-    subgraph Dashboard["Interactive Dashboard"]
-        AIOHTTP["aiohttp server"]
-        REACT["React SPA<br/>canvas graph explorer"]
-    end
-
-    Agents --> Transport
-    Transport --> Server
-    WriteTools --> GE
-    WriteTools --> EE
-    ReadTools --> SE
-    ReadTools --> GT
-    ReadTools --> GE
-    UT1 --> Dashboard
-    GE --> DB
-    SE --> VEC
-    SE --> FTS
-    GT --> DB
-    EM --> DB
-    EE --> VEC
-    AIOHTTP --> DB
-
-    style Agents fill:#6366f1,stroke:#4f46e5,color:#fff
-    style Server fill:#0ea5e9,stroke:#0284c7,color:#fff
-    style Storage fill:#f59e0b,stroke:#d97706,color:#fff
-    style Engines fill:#8b5cf6,stroke:#7c3aed,color:#fff
-    style Dashboard fill:#10b981,stroke:#059669,color:#fff
+    UI --> Dashboard[React SPA + aiohttp]
+    Dashboard --> DB
 ```
 
 Everything lives in a single SQLite database per project. No external services, no Docker containers, no API keys. The server communicates over MCP's standard stdio transport (SSE also supported) and stores all data in `.graphmem/graph.db` at your project root. The database file is portable -- copy it between machines, check it into version control, or back it up like any other file.
@@ -340,9 +294,9 @@ For detailed technical documentation -- data model, search pipeline, entity reso
 
 ## MCP Integration
 
-graph-mem is a standard MCP (Model Context Protocol) server. It does not require any external provider, API key, or cloud account. It communicates with your agent over the MCP protocol (stdio by default, SSE and streamable-http also supported) and exposes 23 tools that the agent can call directly.
+GRAPH MEM is a standard MCP (Model Context Protocol) server. It does not require any external provider, API key, or cloud account. It communicates with your agent over the MCP protocol (stdio by default, SSE and streamable-http also supported) and exposes 23 tools that the agent can call directly.
 
-**What this means in practice:** once you add graph-mem to your agent's MCP config, the agent sees 19 new tools in its tool list. The agent calls these tools the same way it calls any other MCP tool -- no special SDK, no provider integration, no authentication. It works with every MCP-compatible agent out of the box.
+**What this means in practice:** once you add GRAPH MEM to your agent's MCP config, the agent sees 23 new tools in its tool list. The agent calls these tools the same way it calls any other MCP tool -- no special SDK, no provider integration, no authentication. It works with every MCP-compatible agent out of the box.
 
 To verify it's working, ask your agent to run `read_graph()` -- it should return the current graph statistics.
 
@@ -507,7 +461,7 @@ pip install -e ".[full,dev]"
 ### Running Tests
 
 ```bash
-pytest                            # all tests (340 pass)
+pytest                            # all tests (346 pass)
 pytest tests/test_graph/          # graph engine tests
 pytest tests/test_server/         # MCP server tool tests (all 23 tools)
 pytest tests/test_cli/            # CLI command tests

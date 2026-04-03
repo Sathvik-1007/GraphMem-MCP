@@ -130,6 +130,10 @@ class HybridSearch:
     ) -> list[tuple[str, float]]:
         """Combine vector and FTS results using Reciprocal Rank Fusion.
 
+        Scores are **normalized to [0, 1]** by dividing by the maximum
+        fused score.  This makes relevance_score meaningful and
+        comparable across queries.
+
         Args:
             vec_results: ``{id: rrf_score}`` from vector similarity search.
             fts_results: ``{id: rrf_score}`` from FTS5 full-text search.
@@ -137,7 +141,8 @@ class HybridSearch:
                 0.0 = FTS5 only, 1.0 = vector only, 0.5 = equal weight.
 
         Returns:
-            ``[(id, score), ...]`` sorted by descending fused score.
+            ``[(id, score), ...]`` sorted by descending fused score,
+            normalized to [0, 1].
 
         Raises:
             ValueError: If *alpha* is not in ``[0.0, 1.0]``.
@@ -158,6 +163,12 @@ class HybridSearch:
             for item_id in all_ids
         ]
         scored.sort(key=lambda x: x[1], reverse=True)
+
+        # Normalize to [0, 1] so scores are interpretable.
+        max_score = scored[0][1] if scored else 0.0
+        if max_score > 0.0:
+            scored = [(item_id, raw / max_score) for item_id, raw in scored]
+
         return scored
 
     async def _boost_from_observations(
@@ -233,6 +244,7 @@ class HybridSearch:
         include_observations: bool = False,
         boost_from_observations: bool = True,
         obs_boost_factor: float = 0.5,
+        min_score: float = 0.0,
     ) -> list[SearchResult]:
         """Search entities using hybrid vector + FTS5 + RRF.
 
@@ -243,6 +255,17 @@ class HybridSearch:
         results are used to boost parent entity scores, allowing entities
         to be found through their observations even when entity-level
         text doesn't match well.
+
+        Args:
+            query: The search query.
+            limit: Maximum number of results to return.
+            entity_types: Optional filter to specific entity types.
+            include_observations: Whether to include entity observations.
+            boost_from_observations: Use observation matches to boost entity scores.
+            obs_boost_factor: Weight multiplier for observation-derived scores.
+            min_score: Minimum relevance score (0.0-1.0) to include in results.
+                Results below this threshold are discarded.  Default 0.0
+                (no filtering).
         """
         vec_results = await self._vector_search(query, "entity_embeddings", limit)
         fts_results = await self._fts_entity_search(query, limit)
@@ -254,6 +277,12 @@ class HybridSearch:
 
         if not scored:
             return []
+
+        # ── Apply minimum score threshold ────────────────────────
+        if min_score > 0.0:
+            scored = [(eid, s) for eid, s in scored if s >= min_score]
+            if not scored:
+                return []
 
         # ── Batch-fetch entities in one query ────────────────────────
         candidate_ids = [eid for eid, _ in scored[: limit * 3]]
@@ -319,16 +348,31 @@ class HybridSearch:
         *,
         limit: int = 10,
         entity_id: str | None = None,
+        min_score: float = 0.0,
     ) -> list[dict[str, Any]]:
         """Search observations using hybrid vector + FTS5 + RRF.
 
         Optionally scoped to a single entity.
+
+        Args:
+            query: The search query.
+            limit: Maximum number of results to return.
+            entity_id: Optional — restrict search to this entity.
+            min_score: Minimum relevance score (0.0-1.0) to include in results.
+                Results below this threshold are discarded.  Default 0.0
+                (no filtering).
         """
         vec_results = await self._vector_search(query, "observation_embeddings", limit)
         fts_results = await self._fts_observation_search(query, limit)
         scored = self._rrf_fuse(vec_results, fts_results)
         if not scored:
             return []
+
+        # ── Apply minimum score threshold ────────────────────────
+        if min_score > 0.0:
+            scored = [(oid, s) for oid, s in scored if s >= min_score]
+            if not scored:
+                return []
 
         # ── Batch-fetch observations ─────────────────────────────────
         candidate_ids = [oid for oid, _ in scored[: limit * 3]]

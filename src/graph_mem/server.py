@@ -707,7 +707,7 @@ async def update_observation(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# WRITE TOOLS (10)  |  READ TOOLS (8)  |  UTILITY (1) — 19 total
+# WRITE TOOLS (10)  |  READ TOOLS (8)  |  UTILITY (1)  |  MULTI-GRAPH (4) — 23 total
 # ═══════════════════════════════════════════════════════════════════════════
 
 
