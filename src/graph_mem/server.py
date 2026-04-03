@@ -1042,16 +1042,16 @@ async def _switch_engines(db_path: Path, graph_name: str) -> dict[str, Any]:
     _state._active_graph = graph_name
 
     # Get stats for response
-    entities = await storage.list_entities()
-    relationships = await storage.list_relationships()
-    observations = await storage.list_observations()
+    entity_count = await storage.count_entities()
+    relationship_count = await storage.count_relationships()
+    observation_count = await storage.count_observations()
 
     return {
         "name": graph_name,
         "db_path": str(db_path),
-        "entities": len(entities),
-        "relationships": len(relationships),
-        "observations": len(observations),
+        "entities": entity_count,
+        "relationships": relationship_count,
+        "observations": observation_count,
     }
 
 
