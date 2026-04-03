@@ -42,6 +42,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
   const viewRef = useRef<ViewTransform>({ x: 0, y: 0, zoom: 1 });
   const rafRef = useRef<number>(0);
   const hoveredRef = useRef<SimNode | null>(null);
+  const initialFitDoneRef = useRef(false);
+  const focusLockRef = useRef(false);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
 
   // Drag state — separate clickStart (never mutated) from panLast (mutated for pan delta)
@@ -77,6 +79,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
         y: -node.y,
         zoom: Math.max(viewRef.current.zoom, 1.2),
       };
+      // Prevent fitToView from overriding this focus
+      focusLockRef.current = true;
+      setTimeout(() => { focusLockRef.current = false; }, 1200);
     },
   }), []);
 
@@ -125,8 +130,13 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
 
     engine.reheat();
 
-    // Fit to view after initial settle
-    setTimeout(() => fitToView(), 600);
+    // Only auto-fit on first load; subsequent changes preserve current view
+    if (!initialFitDoneRef.current) {
+      initialFitDoneRef.current = true;
+      setTimeout(() => {
+        if (!focusLockRef.current) fitToView();
+      }, 600);
+    }
   }, [graph, visibleEntityTypes]);
 
   // ── Update physics config ──

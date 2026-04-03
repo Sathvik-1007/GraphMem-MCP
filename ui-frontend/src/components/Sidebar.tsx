@@ -846,39 +846,58 @@ function ManagePanel({
   };
 
   return (
-    <div className="sidebar-section">
-      <div className="sidebar-heading">Manage Entities</div>
+    <>
+      <div className="panel-section">
+        <div className="sec-title">Manage Entities</div>
 
-      {/* Entity selector */}
-      <label style={{ fontSize: 11, fontWeight: 500, marginBottom: 4, display: "block" }}>Entity</label>
-      <select
-        className="sidebar-input"
-        value={chosen}
-        onChange={(e) => { setChosen(e.target.value); setConfirmDelete(false); setEditing(false); setFeedback(null); }}
-        style={{ width: "100%", marginBottom: 10 }}
-      >
-        <option value="">-- select --</option>
-        {sorted.map((e) => (
-          <option key={e.name} value={e.name}>
-            {e.name} ({e.entity_type})
-          </option>
-        ))}
-      </select>
+        {/* Entity selector */}
+        <select
+          className="panel-input"
+          value={chosen}
+          onChange={(e) => { setChosen(e.target.value); setConfirmDelete(false); setEditing(false); setFeedback(null); }}
+        >
+          <option value="">Select entity...</option>
+          {sorted.map((e) => (
+            <option key={e.name} value={e.name}>
+              {e.name} ({e.entity_type})
+            </option>
+          ))}
+        </select>
+      </div>
 
       {chosen && (
-        <>
+        <div className="panel-section" style={{ borderBottom: "none" }}>
+          {/* Entity info badge */}
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "6px 10px",
+            borderRadius: 6,
+            background: "var(--color-surface-2)",
+            border: "1px solid var(--color-border)",
+            marginBottom: 10,
+          }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: "50%",
+              background: entityColor(graphEntities.find((e) => e.name === chosen)?.entity_type ?? "default"),
+              flexShrink: 0,
+            }} />
+            <span style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text)" }}>{chosen}</span>
+          </div>
+
           {/* Action buttons */}
-          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
             <button
-              className="btn btn--danger"
+              className={`panel-btn ${confirmDelete ? "panel-btn-danger" : ""}`}
               disabled={busy}
               onClick={() => { if (confirmDelete) void handleDelete(); else setConfirmDelete(true); }}
               style={{ flex: 1 }}
             >
-              {confirmDelete ? "Confirm delete?" : "Delete"}
+              {confirmDelete ? "Confirm?" : "Delete"}
             </button>
             <button
-              className="btn btn--secondary"
+              className="panel-btn"
               disabled={busy}
               onClick={() => { setEditing(!editing); setConfirmDelete(false); }}
               style={{ flex: 1 }}
@@ -890,41 +909,34 @@ function ManagePanel({
           {/* Edit form */}
           {editing && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <div>
-                <label style={{ fontSize: 11, fontWeight: 500, display: "block", marginBottom: 2 }}>Type</label>
-                <input
-                  className="sidebar-input"
-                  value={editType}
-                  onChange={(e) => setEditType(e.target.value)}
-                  placeholder="entity type"
-                  style={{ width: "100%" }}
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: 11, fontWeight: 500, display: "block", marginBottom: 2 }}>Description</label>
-                <textarea
-                  className="sidebar-input"
-                  value={editDesc}
-                  onChange={(e) => setEditDesc(e.target.value)}
-                  placeholder="description"
-                  rows={3}
-                  style={{ width: "100%", resize: "vertical" }}
-                />
-              </div>
-              <button className="btn btn--primary" disabled={busy} onClick={() => void handleUpdate()}>
-                {busy ? "Saving..." : "Save changes"}
+              <input
+                className="panel-input"
+                value={editType}
+                onChange={(e) => setEditType(e.target.value)}
+                placeholder="Type (e.g. person)"
+              />
+              <textarea
+                className="panel-input"
+                value={editDesc}
+                onChange={(e) => setEditDesc(e.target.value)}
+                placeholder="Description"
+                rows={3}
+                style={{ resize: "vertical" }}
+              />
+              <button className="panel-btn panel-btn-primary" disabled={busy} onClick={() => void handleUpdate()}>
+                {busy ? "Saving..." : "Save Changes"}
               </button>
             </div>
           )}
 
           {/* Feedback */}
           {feedback && (
-            <div style={{ fontSize: 11, marginTop: 8, color: feedback.ok ? "var(--color-success, #22c55e)" : "var(--color-danger)" }}>
+            <div style={{ fontSize: 11, marginTop: 8, color: feedback.ok ? "var(--color-success)" : "var(--color-danger)" }}>
               {feedback.msg}
             </div>
           )}
-        </>
+        </div>
       )}
-    </div>
+    </>
   );
 }

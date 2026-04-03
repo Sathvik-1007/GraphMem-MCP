@@ -227,16 +227,27 @@ graph-mem exposes 14 MCP tools -- six for writing, seven for reading, and one ut
 
 ## Architecture
 
-```
-Agent (Claude/Cursor/Windsurf/OpenCode/Codex/Gemini/Copilot/...)
-  |
-  | MCP Protocol (stdio or SSE)
-  v
-graph-mem server
-  |-- Graph Engine ---- entity/relationship/observation CRUD
-  |-- Semantic Engine -- sentence-transformers embeddings + hybrid search
-  |-- UI Server ------- interactive graph explorer (aiohttp + React SPA)
-  '-- Storage --------- pluggable backend (SQLite default, .graphmem/graph.db)
+```mermaid
+graph TB
+    Agent["LLM Agent<br/>(Claude · Cursor · Windsurf · OpenCode · Gemini · ...)"]
+    MCP["MCP Protocol<br/>(stdio / SSE / streamable-http)"]
+    Server["graph-mem server"]
+    Graph["Graph Engine<br/>Entity · Relationship · Observation CRUD"]
+    Semantic["Semantic Engine<br/>sentence-transformers + hybrid search"]
+    UI["UI Server<br/>Interactive graph explorer (aiohttp + React SPA)"]
+    Storage["Storage Backend<br/>SQLite WAL · .graphmem/graph.db"]
+
+    Agent -->|"tool calls"| MCP
+    MCP --> Server
+    Server --> Graph
+    Server --> Semantic
+    Server --> UI
+    Graph --> Storage
+    Semantic --> Storage
+
+    style Agent fill:#6366f1,stroke:#4f46e5,color:#fff
+    style Server fill:#0ea5e9,stroke:#0284c7,color:#fff
+    style Storage fill:#f59e0b,stroke:#d97706,color:#fff
 ```
 
 Everything lives in a single SQLite database per project. No external services, no Docker containers, no API keys. The server communicates over MCP's standard stdio transport (SSE also supported) and stores all data in `.graphmem/graph.db` at your project root.
@@ -278,6 +289,32 @@ The `.graphmem/` directory is automatically created if it doesn't exist. Add `.g
 
 The knowledge graph has three core primitives:
 
+```mermaid
+erDiagram
+    ENTITY {
+        string name PK
+        string entity_type
+        string description
+        json properties
+    }
+    OBSERVATION {
+        string id PK
+        string content
+        string source
+        float[] embedding
+    }
+    RELATIONSHIP {
+        string id PK
+        string relationship_type
+        float weight
+        json properties
+    }
+
+    ENTITY ||--o{ OBSERVATION : "has"
+    ENTITY ||--o{ RELATIONSHIP : "source"
+    ENTITY ||--o{ RELATIONSHIP : "target"
+```
+
 - **Entities** are named nodes with a type and description (e.g., `AuthService`, type `service`).
 - **Relationships** are typed, directed edges between entities (e.g., `AuthService --DEPENDS_ON--> Database`).
 - **Observations** are factual statements attached to entities (e.g., "Uses bcrypt for password hashing").
@@ -285,6 +322,25 @@ The knowledge graph has three core primitives:
 ### Hybrid Search
 
 `search_nodes` combines three retrieval strategies using Reciprocal Rank Fusion (RRF):
+
+```mermaid
+graph LR
+    Query["Search Query"]
+    Vec["Vector Search<br/>cosine similarity on<br/>sentence-transformer embeddings"]
+    FTS["Full-Text Search<br/>SQLite FTS5 with BM25"]
+    RRF["RRF Fusion<br/>merge + re-rank"]
+    Results["Scored Results"]
+
+    Query --> Vec
+    Query --> FTS
+    Vec --> RRF
+    FTS --> RRF
+    RRF --> Results
+
+    style Query fill:#6366f1,stroke:#4f46e5,color:#fff
+    style RRF fill:#0ea5e9,stroke:#0284c7,color:#fff
+    style Results fill:#10b981,stroke:#059669,color:#fff
+```
 
 1. **Vector similarity** -- cosine distance against sentence-transformer embeddings of entity names, descriptions, and observations.
 2. **Full-text search** -- SQLite FTS5 with BM25 ranking for keyword matching.
@@ -296,9 +352,42 @@ When no embedding model is installed, search gracefully degrades to FTS-only mod
 
 `find_connections` walks the graph recursively using SQL CTEs, discovering indirect relationships up to a configurable depth. This surfaces connections that no flat search can find -- like tracing a function through three layers of abstraction to the database schema it ultimately modifies.
 
+```mermaid
+graph LR
+    A["AuthService"] -->|DEPENDS_ON| B["UserStore"]
+    B -->|READS_FROM| C["PostgresDB"]
+    C -->|HOSTS| D["users_table"]
+
+    style A fill:#f472b6,stroke:#ec4899,color:#fff
+    style D fill:#34d399,stroke:#10b981,color:#fff
+```
+
+A query like `find_connections("AuthService", max_hops=3)` traverses the full chain `AuthService → UserStore → PostgresDB → users_table`, even though `users_table` never mentions "auth."
+
 ### Entity Resolution
 
 When the agent references an entity by name, graph-mem resolves it through a cascade:
+
+```mermaid
+flowchart TD
+    Input["Agent references entity name"]
+    Exact["Exact match<br/>(case-sensitive)"]
+    CI["Case-insensitive match"]
+    FTS["FTS5 fuzzy match"]
+    Suggest["Return closest<br/>suggestions"]
+    Found["Entity resolved"]
+
+    Input --> Exact
+    Exact -->|"found"| Found
+    Exact -->|"miss"| CI
+    CI -->|"found"| Found
+    CI -->|"miss"| FTS
+    FTS -->|"found"| Found
+    FTS -->|"miss"| Suggest
+
+    style Found fill:#10b981,stroke:#059669,color:#fff
+    style Suggest fill:#f59e0b,stroke:#d97706,color:#fff
+```
 
 1. **Exact match** -- case-sensitive name lookup.
 2. **Case-insensitive match** -- normalized comparison.
@@ -449,42 +538,45 @@ pytest -x -q                      # stop on first failure, quiet output
 
 ### Project Structure
 
+```mermaid
+graph TD
+    Root["src/graph_mem/"]
+
+    CLI["cli/<br/>main.py · install.py"]
+    DB["db/<br/>connection.py · schema.py · migrations/"]
+    GraphMod["graph/<br/>engine.py · traversal.py · merge.py"]
+    Models["models/<br/>entity.py · relationship.py · observation.py"]
+    SemanticMod["semantic/<br/>embeddings.py · search.py"]
+    StorageMod["storage/<br/>base.py · sqlite_backend.py"]
+    UIMod["ui/<br/>server.py · routes.py · frontend/"]
+    Utils["utils/<br/>config.py · errors.py · ids.py · logging.py"]
+    Entry["server.py<br/>MCP entry point · 14 tool definitions"]
+
+    Root --> Entry
+    Root --> CLI
+    Root --> DB
+    Root --> GraphMod
+    Root --> Models
+    Root --> SemanticMod
+    Root --> StorageMod
+    Root --> UIMod
+    Root --> Utils
+
+    style Root fill:#6366f1,stroke:#4f46e5,color:#fff
+    style Entry fill:#0ea5e9,stroke:#0284c7,color:#fff
 ```
-src/graph_mem/
-  __init__.py              # package version
-  __main__.py              # python -m graph_mem support
-  server.py                # MCP server entry point and 14 tool definitions
-  cli/
-    main.py                # Click CLI: server, init, status, export, import, validate, ui
-    install.py             # Skill installer for 19 agent types
-  db/
-    connection.py          # Database class (aiosqlite, WAL, PRAGMA tuning)
-    schema.py              # Migration runner + version tracking
-    migrations/            # Versioned SQL migration scripts
-  graph/
-    engine.py              # GraphEngine -- entity/relationship/observation CRUD
-    traversal.py           # GraphTraversal -- BFS, path-finding, subgraph extraction
-    merge.py               # EntityMerger -- entity deduplication and merging
-  models/
-    entity.py              # Entity dataclass
-    relationship.py        # Relationship dataclass
-    observation.py         # Observation dataclass
-  semantic/
-    embeddings.py          # EmbeddingEngine -- lazy loading, ONNX, content-hash cache
-    search.py              # HybridSearch -- vector + FTS5 + RRF fusion
-  storage/
-    base.py                # StorageBackend ABC (~37 abstract methods)
-    sqlite_backend.py      # SQLiteBackend -- reference implementation
-  ui/
-    server.py              # aiohttp web server for graph visualisation
-    routes.py              # REST API route handlers
-    frontend/              # Pre-built React SPA (Sigma.js graph explorer)
-  utils/
-    config.py              # Environment-variable-based Config dataclass
-    errors.py              # 14-class exception hierarchy
-    ids.py                 # ULID generation
-    logging.py             # Structured logging setup
-```
+
+| Module | Responsibility |
+|--------|---------------|
+| `server.py` | MCP server entry point, registers all 14 tools |
+| `cli/` | Click CLI commands (server, init, status, export, import, validate, ui) + skill installer for 19 agents |
+| `db/` | Database class (aiosqlite, WAL mode, PRAGMA tuning) + versioned migrations |
+| `graph/` | GraphEngine CRUD, BFS traversal, path-finding, subgraph extraction, entity merging |
+| `models/` | Dataclasses for Entity, Relationship, Observation |
+| `semantic/` | EmbeddingEngine (lazy loading, ONNX, content-hash cache) + HybridSearch (vector + FTS5 + RRF) |
+| `storage/` | StorageBackend ABC (~37 methods) + SQLiteBackend reference implementation |
+| `ui/` | aiohttp web server + REST API routes + pre-built React SPA graph explorer |
+| `utils/` | Config, structured logging, error hierarchy (14 classes), ULID generation |
 
 ---
 

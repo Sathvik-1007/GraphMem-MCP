@@ -296,6 +296,18 @@ html, body {
   color: #fff;
 }
 
+.panel-btn-danger {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: #fff;
+  font-weight: 600;
+}
+
+.panel-btn-danger:hover {
+  opacity: 0.88;
+  color: #fff;
+}
+
 /* Inputs */
 .panel-input {
   width: 100%;
