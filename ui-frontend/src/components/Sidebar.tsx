@@ -781,47 +781,36 @@ function ManagePanel({
   onDelete: (name: string) => Promise<void>;
   onUpdate: (name: string, fields: { name?: string; description?: string; entity_type?: string }) => Promise<void>;
 }) {
-  const [chosen, setChosen] = useState(selectedEntityName ?? "");
   const [editName, setEditName] = useState("");
   const [editType, setEditType] = useState("");
   const [editDesc, setEditDesc] = useState("");
-  const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
 
-  // Sync dropdown when selectedEntityName changes
-  useEffect(() => {
-    if (selectedEntityName) {
-      setChosen(selectedEntityName);
-      setConfirmDelete(false);
-      setEditing(false);
-      setFeedback(null);
-    }
-  }, [selectedEntityName]);
-
-  // When chosen entity changes, prefill edit fields
-  useEffect(() => {
-    const ent = graphEntities.find((e) => e.name === chosen);
-    if (ent) {
-      setEditName(ent.name ?? "");
-      setEditType(ent.entity_type ?? "");
-      setEditDesc(ent.description ?? "");
-    }
-  }, [chosen, graphEntities]);
-
-  const sorted = useMemo(
-    () => [...graphEntities].sort((a, b) => a.name.localeCompare(b.name)),
-    [graphEntities],
+  const entity = useMemo(
+    () => graphEntities.find((e) => e.name === selectedEntityName) ?? null,
+    [graphEntities, selectedEntityName],
   );
 
+  // When selected entity changes, prefill edit fields & reset state
+  useEffect(() => {
+    if (entity) {
+      setEditName(entity.name ?? "");
+      setEditType(entity.entity_type ?? "");
+      setEditDesc(entity.description ?? "");
+    }
+    setConfirmDelete(false);
+    setFeedback(null);
+  }, [entity]);
+
   const handleDelete = async () => {
-    if (!chosen) return;
+    if (!selectedEntityName) return;
+    if (!confirmDelete) { setConfirmDelete(true); return; }
     setBusy(true);
     try {
-      await onDelete(chosen);
-      setFeedback({ ok: true, msg: `Deleted "${chosen}"` });
-      setChosen("");
+      await onDelete(selectedEntityName);
+      setFeedback({ ok: true, msg: `Deleted "${selectedEntityName}"` });
       setConfirmDelete(false);
     } catch {
       setFeedback({ ok: false, msg: "Delete failed" });
@@ -830,21 +819,23 @@ function ManagePanel({
     }
   };
 
-  const handleUpdate = async () => {
-    if (!chosen) return;
+  const handleSave = async () => {
+    if (!selectedEntityName) return;
     setBusy(true);
     try {
       const fields: { name?: string; description?: string; entity_type?: string } = {};
-      if (editName.trim() && editName.trim() !== chosen) fields.name = editName.trim();
-      if (editDesc) fields.description = editDesc;
-      if (editType) fields.entity_type = editType;
-      await onUpdate(chosen, fields);
-      // If name changed, update chosen to reflect new name
-      if (fields.name) {
-        setChosen(fields.name);
+      if (editName.trim() && editName.trim() !== selectedEntityName) fields.name = editName.trim();
+      if (editDesc !== (entity?.description ?? "")) fields.description = editDesc;
+      if (editType !== (entity?.entity_type ?? "")) fields.entity_type = editType;
+      if (Object.keys(fields).length === 0) {
+        setFeedback({ ok: true, msg: "No changes" });
+        setTimeout(() => setFeedback(null), 1500);
+        setBusy(false);
+        return;
       }
-      setFeedback({ ok: true, msg: `Updated "${fields.name || chosen}"` });
-      setEditing(false);
+      await onUpdate(selectedEntityName, fields);
+      setFeedback({ ok: true, msg: "Saved!" });
+      setTimeout(() => setFeedback(null), 2000);
     } catch {
       setFeedback({ ok: false, msg: "Update failed" });
     } finally {
@@ -852,104 +843,126 @@ function ManagePanel({
     }
   };
 
-  return (
-    <>
-      <div className="panel-section">
-        <div className="sec-title">Manage Entities</div>
+  // No entity selected — show helpful prompt
+  if (!entity) {
+    return (
+      <div className="panel-section" style={{ borderBottom: "none" }}>
+        <div className="sec-title">Edit Entity</div>
+        <div style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 10,
+          padding: "24px 12px",
+          color: "var(--color-text-muted)",
+          textAlign: "center",
+        }}>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.4 }}>
+            <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+          <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+            Click on a node in the graph to select it, then edit its details here.
+          </div>
+          <div style={{ fontSize: 10, marginTop: 2 }}>
+            Or use the <strong>Detail Panel</strong> on the right for full inline editing.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
-        {/* Entity selector */}
-        <select
-          className="panel-input"
-          value={chosen}
-          onChange={(e) => { setChosen(e.target.value); setConfirmDelete(false); setEditing(false); setFeedback(null); }}
-        >
-          <option value="">Select entity...</option>
-          {sorted.map((e) => (
-            <option key={e.name} value={e.name}>
-              {e.name} ({e.entity_type})
-            </option>
-          ))}
-        </select>
+  // Entity is selected — show inline form
+  return (
+    <div className="panel-section" style={{ borderBottom: "none" }}>
+      <div className="sec-title">Edit Entity</div>
+
+      {/* Entity badge */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "8px 10px",
+        borderRadius: 6,
+        background: "var(--color-surface-2)",
+        border: "1px solid var(--color-border)",
+        marginBottom: 12,
+      }}>
+        <span style={{
+          width: 8, height: 8, borderRadius: "50%",
+          background: entityColor(entity.entity_type),
+          flexShrink: 0,
+        }} />
+        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text)", flex: 1 }}>{entity.name}</span>
+        <span style={{ fontSize: 10, color: "var(--color-text-muted)" }}>{entity.entity_type}</span>
       </div>
 
-      {chosen && (
-        <div className="panel-section" style={{ borderBottom: "none" }}>
-          {/* Entity info badge */}
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "6px 10px",
-            borderRadius: 6,
-            background: "var(--color-surface-2)",
-            border: "1px solid var(--color-border)",
-            marginBottom: 10,
-          }}>
-            <span style={{
-              width: 8, height: 8, borderRadius: "50%",
-              background: entityColor(graphEntities.find((e) => e.name === chosen)?.entity_type ?? "default"),
-              flexShrink: 0,
-            }} />
-            <span style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text)" }}>{chosen}</span>
-          </div>
+      {/* Always-visible edit fields */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div>
+          <label style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-muted)", display: "block", marginBottom: 3 }}>Name</label>
+          <input
+            className="panel-input"
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+            placeholder="Entity name"
+          />
+        </div>
+        <div>
+          <label style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-muted)", display: "block", marginBottom: 3 }}>Type</label>
+          <input
+            className="panel-input"
+            value={editType}
+            onChange={(e) => setEditType(e.target.value)}
+            placeholder="e.g. person, concept, project"
+          />
+        </div>
+        <div>
+          <label style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-muted)", display: "block", marginBottom: 3 }}>Description</label>
+          <textarea
+            className="panel-input"
+            value={editDesc}
+            onChange={(e) => setEditDesc(e.target.value)}
+            placeholder="Description"
+            rows={3}
+            style={{ resize: "vertical" }}
+          />
+        </div>
 
-          {/* Action buttons */}
-          <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-            <button
-              className={`panel-btn ${confirmDelete ? "panel-btn-danger" : ""}`}
-              disabled={busy}
-              onClick={() => { if (confirmDelete) void handleDelete(); else setConfirmDelete(true); }}
-              style={{ flex: 1 }}
-            >
-              {confirmDelete ? "Confirm?" : "Delete"}
-            </button>
-            <button
-              className="panel-btn"
-              disabled={busy}
-              onClick={() => { setEditing(!editing); setConfirmDelete(false); }}
-              style={{ flex: 1 }}
-            >
-              {editing ? "Cancel" : "Edit"}
-            </button>
-          </div>
+        <button className="panel-btn panel-btn-primary" disabled={busy} onClick={() => void handleSave()}>
+          {busy ? "Saving..." : "Save Changes"}
+        </button>
 
-          {/* Edit form */}
-          {editing && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <input
-                className="panel-input"
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-                placeholder="Name"
-              />
-              <input
-                className="panel-input"
-                value={editType}
-                onChange={(e) => setEditType(e.target.value)}
-                placeholder="Type (e.g. person)"
-              />
-              <textarea
-                className="panel-input"
-                value={editDesc}
-                onChange={(e) => setEditDesc(e.target.value)}
-                placeholder="Description"
-                rows={3}
-                style={{ resize: "vertical" }}
-              />
-              <button className="panel-btn panel-btn-primary" disabled={busy} onClick={() => void handleUpdate()}>
-                {busy ? "Saving..." : "Save Changes"}
-              </button>
-            </div>
-          )}
+        {/* Delete — separate, clearly distinct */}
+        <button
+          className={`panel-btn ${confirmDelete ? "panel-btn-danger" : ""}`}
+          disabled={busy}
+          onClick={() => void handleDelete()}
+          style={{ gap: 5, marginTop: 4 }}
+        >
+          {confirmDelete ? "Click again to confirm delete" : "Delete Entity"}
+        </button>
+        {confirmDelete && (
+          <button
+            className="panel-btn"
+            onClick={() => setConfirmDelete(false)}
+            style={{ fontSize: 10 }}
+          >
+            Cancel
+          </button>
+        )}
+      </div>
 
-          {/* Feedback */}
-          {feedback && (
-            <div style={{ fontSize: 11, marginTop: 8, color: feedback.ok ? "var(--color-success)" : "var(--color-danger)" }}>
-              {feedback.msg}
-            </div>
-          )}
+      {/* Feedback */}
+      {feedback && (
+        <div style={{ fontSize: 11, marginTop: 8, color: feedback.ok ? "var(--color-success)" : "var(--color-danger)", textAlign: "center" }}>
+          {feedback.msg}
         </div>
       )}
-    </>
+
+      {/* Hint */}
+      <div style={{ fontSize: 9, color: "var(--color-text-muted)", marginTop: 12, textAlign: "center", lineHeight: 1.5 }}>
+        For observations, properties & relationships, use the detail panel on the right.
+      </div>
+    </div>
   );
 }

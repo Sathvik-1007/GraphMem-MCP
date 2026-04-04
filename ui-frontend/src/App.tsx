@@ -7,7 +7,7 @@ import type { PhysicsConfig } from "./engine/ForceEngine";
 import GraphCanvas from "./components/GraphCanvas";
 import Sidebar from "./components/Sidebar";
 import DetailPanel from "./components/DetailPanel";
-import { addEntity, addObservations, addRelationship, updateEntity, deleteEntity, fetchGraphs, switchGraph } from "./api/client";
+import { addEntity, addObservations, addRelationship, updateEntity, deleteEntity, updateObservation, deleteObservation, fetchGraphs, switchGraph } from "./api/client";
 import type { GraphInfo } from "./api/client";
 
 export default function App() {
@@ -135,6 +135,32 @@ export default function App() {
     [clearEntity, refreshGraph],
   );
 
+  const handleAddObservations = useCallback(
+    async (entityName: string, observations: string[]) => {
+      await addObservations(entityName, observations);
+      await selectEntity(entityName);
+      await refreshGraph();
+    },
+    [selectEntity, refreshGraph],
+  );
+
+  const handleUpdateObservation = useCallback(
+    async (obsId: string, entityName: string, content: string) => {
+      await updateObservation(obsId, entityName, content);
+      await selectEntity(entityName);
+    },
+    [selectEntity],
+  );
+
+  const handleDeleteObservation = useCallback(
+    async (obsId: string, entityName: string) => {
+      await deleteObservation(obsId, entityName);
+      await selectEntity(entityName);
+      await refreshGraph();
+    },
+    [selectEntity, refreshGraph],
+  );
+
   // Loading state
   if (state.loading) {
     return (
@@ -258,6 +284,9 @@ export default function App() {
         onNavigate={handleNavigateToEntity}
         onUpdateEntity={handleUpdateEntity}
         onDeleteEntity={handleDeleteEntity}
+        onAddObservations={handleAddObservations}
+        onUpdateObservation={handleUpdateObservation}
+        onDeleteObservation={handleDeleteObservation}
         allEntityNames={allEntityNames}
       />
     </div>

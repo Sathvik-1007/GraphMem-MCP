@@ -402,7 +402,11 @@ The `open_dashboard` MCP tool also starts this UI server and returns the URL dir
 - **Force-directed graph canvas** with real-time physics simulation
 - **Entity type filtering** — toggle visibility of entity types via sidebar checkboxes
 - **Click-to-focus** — click a node on the graph or sidebar to instantly center and zoom to it
-- **Entity CRUD** — create, update (including rename), and delete entities, relationships, and observations from the UI
+- **Inline entity editing** — click any field (name, type, description) in the detail panel to edit it in-place
+- **Property management** — add, edit, and delete individual properties per entity with per-row controls
+- **Observation management** — add, edit, and delete observations with confirmation dialogs and inline editing
+- **Relationship navigation** — click related entities to navigate the graph
+- **Entity creation and deletion** — create new entities from the sidebar, delete with confirmation from the detail panel danger zone
 - **Hybrid search** — semantic + keyword search across all entities
 - **Graph picker** — switch between named graphs without restarting the server
 - **Physics controls** — adjust spring, repulsion, damping, and gravity in real-time

@@ -23,6 +23,7 @@ export interface GraphResponse {
 }
 
 export interface EntityObservation {
+  id: string;
   content: string;
   source: string;
   created_at: string | number | null;

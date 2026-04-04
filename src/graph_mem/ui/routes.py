@@ -36,6 +36,8 @@ def setup_routes(app: web.Application) -> None:
     app.router.add_post("/api/entity", handle_create_entity)
     app.router.add_post("/api/relationship", handle_create_relationship)
     app.router.add_post("/api/observations", handle_create_observations)
+    app.router.add_put("/api/observation/{obs_id}", handle_update_observation)
+    app.router.add_delete("/api/observation/{obs_id}", handle_delete_observation)
     app.router.add_put("/api/entity/{name}", handle_update_entity)
     app.router.add_delete("/api/entity/{name}", handle_delete_entity)
     app.router.add_get("/api/graphs", handle_list_graphs)
@@ -171,6 +173,7 @@ async def handle_entity(request: web.Request) -> web.Response:
 
     resp_observations = [
         {
+            "id": o.get("id", ""),
             "content": o.get("content", ""),
             "source": o.get("source", ""),
             "created_at": o.get("created_at"),
@@ -455,6 +458,71 @@ async def handle_create_observations(request: web.Request) -> web.Response:
         {"status": "ok", "count": len(results)},
         status=201,
     )
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/observation/{obs_id} — Update an observation's content
+# ---------------------------------------------------------------------------
+
+
+async def handle_update_observation(request: web.Request) -> web.Response:
+    """Update an observation's content by ID."""
+    graph = request.app.get("graph")
+    if graph is None:
+        return web.json_response({"error": "Graph engine not available"}, status=500)
+
+    obs_id = request.match_info["obs_id"]
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    entity_name = body.get("entity_name", "")
+    content = body.get("content", "")
+    if not entity_name or not content.strip():
+        return web.json_response({"error": "entity_name and content are required"}, status=400)
+
+    try:
+        result = await graph.update_observation(entity_name, obs_id, content.strip())
+    except (GraphMemError, ValueError) as exc:
+        log.error("Failed to update observation %s: %s", obs_id, exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+    return web.json_response(result)
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/observation/{obs_id} — Delete an observation
+# ---------------------------------------------------------------------------
+
+
+async def handle_delete_observation(request: web.Request) -> web.Response:
+    """Delete a single observation by ID."""
+    graph = request.app.get("graph")
+    if graph is None:
+        return web.json_response({"error": "Graph engine not available"}, status=500)
+
+    obs_id = request.match_info["obs_id"]
+
+    # Entity name can come from query param or body
+    entity_name = request.query.get("entity_name", "")
+    if not entity_name:
+        try:
+            body = await request.json()
+            entity_name = body.get("entity_name", "")
+        except (ValueError, TypeError):
+            pass
+
+    if not entity_name:
+        return web.json_response({"error": "entity_name is required"}, status=400)
+
+    try:
+        deleted = await graph.delete_observations(entity_name, [obs_id])
+    except (GraphMemError, ValueError) as exc:
+        log.error("Failed to delete observation %s: %s", obs_id, exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+    return web.json_response({"status": "ok", "deleted": deleted})
 
 
 # ---------------------------------------------------------------------------

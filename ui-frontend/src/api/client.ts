@@ -129,6 +129,21 @@ export function deleteEntity(
   return del(`/entity/${encodeURIComponent(name)}`);
 }
 
+export function updateObservation(
+  obsId: string,
+  entityName: string,
+  content: string,
+): Promise<{ status: string }> {
+  return put(`/observation/${encodeURIComponent(obsId)}`, { entity_name: entityName, content });
+}
+
+export function deleteObservation(
+  obsId: string,
+  entityName: string,
+): Promise<{ status: string; deleted: number }> {
+  return del(`/observation/${encodeURIComponent(obsId)}?entity_name=${encodeURIComponent(entityName)}`);
+}
+
 // ── Multi-graph operations ──
 
 export interface GraphInfo {
