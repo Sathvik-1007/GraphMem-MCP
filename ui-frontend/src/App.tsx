@@ -116,7 +116,7 @@ export default function App() {
   );
 
   const handleUpdateEntity = useCallback(
-    async (name: string, fields: { name?: string; description?: string; entity_type?: string }) => {
+    async (name: string, fields: { name?: string; description?: string; entity_type?: string; properties?: Record<string, unknown> }) => {
       await updateEntity(name, fields);
       // If name was changed, select the new name; otherwise re-select current
       const newName = fields.name || name;
@@ -274,19 +274,17 @@ export default function App() {
         theme={theme}
         onToggleTheme={toggleTheme}
         onExpandChange={setSidebarExpanded}
-        selectedEntityName={state.selectedEntity?.name ?? null}
+        selectedEntity={state.selectedEntity}
         onDeleteEntity={handleDeleteEntity}
         onUpdateEntity={handleUpdateEntity}
+        onAddObservations={handleAddObservations}
+        onUpdateObservation={handleUpdateObservation}
+        onDeleteObservation={handleDeleteObservation}
       />
       <DetailPanel
         entity={state.selectedEntity}
         onClose={handleDeselectNode}
         onNavigate={handleNavigateToEntity}
-        onUpdateEntity={handleUpdateEntity}
-        onDeleteEntity={handleDeleteEntity}
-        onAddObservations={handleAddObservations}
-        onUpdateObservation={handleUpdateObservation}
-        onDeleteObservation={handleDeleteObservation}
         allEntityNames={allEntityNames}
       />
     </div>

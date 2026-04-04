@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import type { PhysicsConfig } from "../engine/ForceEngine";
 import { DEFAULT_PHYSICS } from "../engine/ForceEngine";
 import { entityColor } from "../utils/colors";
-import type { SearchResult, StatsResponse, GraphEntity } from "../types/graph";
+import type { SearchResult, StatsResponse, GraphEntity, EntityResponse } from "../types/graph";
 
 // ── SVG Icons (inline, no emoji) ──
 
@@ -75,6 +75,65 @@ function IconManage() {
   );
 }
 
+function IconSmallPlus() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  );
+}
+
+function IconCheck() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function IconCancel() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
+function IconEdit() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+    </svg>
+  );
+}
+
+function IconTrash() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+// ── Tiny icon button ──
+
+function TinyBtn({ onClick, title, color, children, disabled }: {
+  onClick: () => void; title: string; color?: string; children: React.ReactNode; disabled?: boolean;
+}) {
+  return (
+    <button
+      className="detail-tiny-btn"
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      title={title}
+      aria-label={title}
+      disabled={disabled}
+      style={color ? { color } : undefined}
+    >
+      {children}
+    </button>
+  );
+}
+
 // ── Types ──
 
 type Tab = "search" | "filter" | "add" | "settings" | "manage";
@@ -108,10 +167,13 @@ export interface SidebarProps {
   onToggleTheme: () => void;
   // Sidebar expand state callback
   onExpandChange?: (expanded: boolean) => void;
-  // Manage entity
-  selectedEntityName: string | null;
+  // Manage entity — full editing
+  selectedEntity: EntityResponse | null;
   onDeleteEntity: (name: string) => Promise<void>;
-  onUpdateEntity: (name: string, fields: { name?: string; description?: string; entity_type?: string }) => Promise<void>;
+  onUpdateEntity: (name: string, fields: { name?: string; description?: string; entity_type?: string; properties?: Record<string, unknown> }) => Promise<void>;
+  onAddObservations: (entityName: string, observations: string[]) => Promise<void>;
+  onUpdateObservation: (obsId: string, entityName: string, content: string) => Promise<void>;
+  onDeleteObservation: (obsId: string, entityName: string) => Promise<void>;
 }
 
 export default function Sidebar({
@@ -135,9 +197,12 @@ export default function Sidebar({
   theme,
   onToggleTheme,
   onExpandChange,
-  selectedEntityName,
+  selectedEntity,
   onDeleteEntity,
   onUpdateEntity,
+  onAddObservations,
+  onUpdateObservation,
+  onDeleteObservation,
 }: SidebarProps) {
   const [activeTab, setActiveTab] = useState<Tab | null>(null);
   const expanded = activeTab !== null;
@@ -163,7 +228,7 @@ export default function Sidebar({
           <SidebarIconBtn icon={<IconSearch />} active={activeTab === "search"} onClick={() => toggleTab("search")} title="Search" />
           <SidebarIconBtn icon={<IconFilter />} active={activeTab === "filter"} onClick={() => toggleTab("filter")} title="Filter" />
           <SidebarIconBtn icon={<IconPlus />} active={activeTab === "add"} onClick={() => toggleTab("add")} title="Add Entity" />
-          <SidebarIconBtn icon={<IconManage />} active={activeTab === "manage"} onClick={() => toggleTab("manage")} title="Manage Entities" />
+          <SidebarIconBtn icon={<IconManage />} active={activeTab === "manage"} onClick={() => toggleTab("manage")} title="Edit Entity" />
           <SidebarIconBtn icon={<IconGear />} active={activeTab === "settings"} onClick={() => toggleTab("settings")} title="Settings" />
           <div style={{ flex: 1 }} />
           <SidebarIconBtn
@@ -215,10 +280,12 @@ export default function Sidebar({
             )}
             {activeTab === "manage" && (
               <ManagePanel
-                graphEntities={graphEntities}
-                selectedEntityName={selectedEntityName}
+                selectedEntity={selectedEntity}
                 onDelete={onDeleteEntity}
                 onUpdate={onUpdateEntity}
+                onAddObservations={onAddObservations}
+                onUpdateObservation={onUpdateObservation}
+                onDeleteObservation={onDeleteObservation}
               />
             )}
             {activeTab === "settings" && (
@@ -288,12 +355,10 @@ function SearchPanel({
   const displayItems: { name: string; entity_type: string }[] = (() => {
     const trimmed = query.trim().toLowerCase();
     if (!trimmed) {
-      // Show all entities sorted alphabetically
       return [...graphEntities]
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((e) => ({ name: e.name, entity_type: e.entity_type }));
     }
-    // Filter locally
     const localMatches = graphEntities
       .filter(
         (e) =>
@@ -301,7 +366,6 @@ function SearchPanel({
           e.entity_type.toLowerCase().includes(trimmed),
       )
       .slice(0, 8);
-    // Merge with API results
     return mergeResults(localMatches, results);
   })();
 
@@ -333,7 +397,6 @@ function SearchPanel({
     });
   }, []);
 
-  // Flat list of visible items for keyboard navigation
   const visibleItems = grouped.flatMap((g) =>
     collapsedTypes.has(g.type) ? [] : g.items,
   );
@@ -586,7 +649,6 @@ function AddEntityPanel({
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
 
-  // Relationship fields
   const [relSource, setRelSource] = useState("");
   const [relTarget, setRelTarget] = useState("");
   const [relType, setRelType] = useState("");
@@ -695,7 +757,7 @@ function AddEntityPanel({
   );
 }
 
-// ── Settings (Physics) Panel — always visible, not collapsible ──
+// ── Settings (Physics) Panel ──
 
 function SettingsPanel({
   physics,
@@ -768,30 +830,32 @@ function PhysicsSlider({
   );
 }
 
-// ── Manage Panel ──
+// ══════════════════════════════════════════════════════════════════════
+// Manage Panel — full entity editing (name, type, desc, props, obs, delete)
+// ══════════════════════════════════════════════════════════════════════
 
 function ManagePanel({
-  graphEntities,
-  selectedEntityName,
+  selectedEntity,
   onDelete,
   onUpdate,
+  onAddObservations,
+  onUpdateObservation,
+  onDeleteObservation,
 }: {
-  graphEntities: GraphEntity[];
-  selectedEntityName: string | null;
+  selectedEntity: EntityResponse | null;
   onDelete: (name: string) => Promise<void>;
-  onUpdate: (name: string, fields: { name?: string; description?: string; entity_type?: string }) => Promise<void>;
+  onUpdate: (name: string, fields: { name?: string; description?: string; entity_type?: string; properties?: Record<string, unknown> }) => Promise<void>;
+  onAddObservations: (entityName: string, observations: string[]) => Promise<void>;
+  onUpdateObservation: (obsId: string, entityName: string, content: string) => Promise<void>;
+  onDeleteObservation: (obsId: string, entityName: string) => Promise<void>;
 }) {
+  const entity = selectedEntity;
   const [editName, setEditName] = useState("");
   const [editType, setEditType] = useState("");
   const [editDesc, setEditDesc] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
-
-  const entity = useMemo(
-    () => graphEntities.find((e) => e.name === selectedEntityName) ?? null,
-    [graphEntities, selectedEntityName],
-  );
 
   // When selected entity changes, prefill edit fields & reset state
   useEffect(() => {
@@ -802,15 +866,34 @@ function ManagePanel({
     }
     setConfirmDelete(false);
     setFeedback(null);
+  }, [entity?.name, entity?.entity_type, entity?.description]);
+
+  const properties = useMemo(() => {
+    if (!entity) return [];
+    return Object.entries(entity.properties).filter(
+      ([, v]) => v !== null && v !== undefined && v !== "",
+    );
   }, [entity]);
 
+  const observations = useMemo(
+    () =>
+      entity?.observations
+        .slice()
+        .sort((a, b) => {
+          const ta = a.created_at ? new Date(String(a.created_at)).getTime() : 0;
+          const tb = b.created_at ? new Date(String(b.created_at)).getTime() : 0;
+          return tb - ta;
+        }) ?? [],
+    [entity],
+  );
+
   const handleDelete = async () => {
-    if (!selectedEntityName) return;
+    if (!entity) return;
     if (!confirmDelete) { setConfirmDelete(true); return; }
     setBusy(true);
     try {
-      await onDelete(selectedEntityName);
-      setFeedback({ ok: true, msg: `Deleted "${selectedEntityName}"` });
+      await onDelete(entity.name);
+      setFeedback({ ok: true, msg: `Deleted "${entity.name}"` });
       setConfirmDelete(false);
     } catch {
       setFeedback({ ok: false, msg: "Delete failed" });
@@ -820,20 +903,20 @@ function ManagePanel({
   };
 
   const handleSave = async () => {
-    if (!selectedEntityName) return;
+    if (!entity) return;
     setBusy(true);
     try {
       const fields: { name?: string; description?: string; entity_type?: string } = {};
-      if (editName.trim() && editName.trim() !== selectedEntityName) fields.name = editName.trim();
-      if (editDesc !== (entity?.description ?? "")) fields.description = editDesc;
-      if (editType !== (entity?.entity_type ?? "")) fields.entity_type = editType;
+      if (editName.trim() && editName.trim() !== entity.name) fields.name = editName.trim();
+      if (editDesc !== (entity.description ?? "")) fields.description = editDesc;
+      if (editType !== (entity.entity_type ?? "")) fields.entity_type = editType;
       if (Object.keys(fields).length === 0) {
         setFeedback({ ok: true, msg: "No changes" });
         setTimeout(() => setFeedback(null), 1500);
         setBusy(false);
         return;
       }
-      await onUpdate(selectedEntityName, fields);
+      await onUpdate(entity.name, fields);
       setFeedback({ ok: true, msg: "Saved!" });
       setTimeout(() => setFeedback(null), 2000);
     } catch {
@@ -863,106 +946,377 @@ function ManagePanel({
           <div style={{ fontSize: 12, lineHeight: 1.5 }}>
             Click on a node in the graph to select it, then edit its details here.
           </div>
-          <div style={{ fontSize: 10, marginTop: 2 }}>
-            Or use the <strong>Detail Panel</strong> on the right for full inline editing.
-          </div>
         </div>
       </div>
     );
   }
 
-  // Entity is selected — show inline form
+  // Entity selected — full editing UI
   return (
-    <div className="panel-section" style={{ borderBottom: "none" }}>
-      <div className="sec-title">Edit Entity</div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+      {/* ── Entity Identity ── */}
+      <div className="panel-section">
+        <div className="sec-title">Entity</div>
 
-      {/* Entity badge */}
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "8px 10px",
-        borderRadius: 6,
-        background: "var(--color-surface-2)",
-        border: "1px solid var(--color-border)",
-        marginBottom: 12,
-      }}>
-        <span style={{
-          width: 8, height: 8, borderRadius: "50%",
-          background: entityColor(entity.entity_type),
-          flexShrink: 0,
-        }} />
-        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text)", flex: 1 }}>{entity.name}</span>
-        <span style={{ fontSize: 10, color: "var(--color-text-muted)" }}>{entity.entity_type}</span>
+        {/* Entity badge */}
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "8px 10px",
+          borderRadius: 6,
+          background: "var(--color-surface-2)",
+          border: "1px solid var(--color-border)",
+          marginBottom: 12,
+        }}>
+          <span style={{
+            width: 8, height: 8, borderRadius: "50%",
+            background: entityColor(entity.entity_type),
+            flexShrink: 0,
+          }} />
+          <span style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entity.name}</span>
+          <span style={{ fontSize: 10, color: "var(--color-text-muted)" }}>{entity.entity_type}</span>
+        </div>
+
+        {/* Edit fields */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div>
+            <label style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-muted)", display: "block", marginBottom: 3 }}>Name</label>
+            <input
+              className="panel-input"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              placeholder="Entity name"
+            />
+          </div>
+          <div>
+            <label style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-muted)", display: "block", marginBottom: 3 }}>Type</label>
+            <input
+              className="panel-input"
+              value={editType}
+              onChange={(e) => setEditType(e.target.value)}
+              placeholder="e.g. person, concept, project"
+            />
+          </div>
+          <div>
+            <label style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-muted)", display: "block", marginBottom: 3 }}>Description</label>
+            <textarea
+              className="panel-input"
+              value={editDesc}
+              onChange={(e) => setEditDesc(e.target.value)}
+              placeholder="Description"
+              rows={3}
+              style={{ resize: "vertical" }}
+            />
+          </div>
+
+          <button className="panel-btn panel-btn-primary" disabled={busy} onClick={() => void handleSave()}>
+            {busy ? "Saving..." : "Save Changes"}
+          </button>
+        </div>
+
+        {feedback && (
+          <div style={{ fontSize: 11, marginTop: 8, color: feedback.ok ? "var(--color-success)" : "var(--color-danger)", textAlign: "center" }}>
+            {feedback.msg}
+          </div>
+        )}
       </div>
 
-      {/* Always-visible edit fields */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div>
-          <label style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-muted)", display: "block", marginBottom: 3 }}>Name</label>
-          <input
-            className="panel-input"
-            value={editName}
-            onChange={(e) => setEditName(e.target.value)}
-            placeholder="Entity name"
-          />
-        </div>
-        <div>
-          <label style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-muted)", display: "block", marginBottom: 3 }}>Type</label>
-          <input
-            className="panel-input"
-            value={editType}
-            onChange={(e) => setEditType(e.target.value)}
-            placeholder="e.g. person, concept, project"
-          />
-        </div>
-        <div>
-          <label style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-muted)", display: "block", marginBottom: 3 }}>Description</label>
-          <textarea
-            className="panel-input"
-            value={editDesc}
-            onChange={(e) => setEditDesc(e.target.value)}
-            placeholder="Description"
-            rows={3}
-            style={{ resize: "vertical" }}
-          />
-        </div>
+      {/* ── Properties ── */}
+      <div className="panel-section">
+        <div className="sec-title">Properties ({properties.length})</div>
+        <ManagePropertiesEditor
+          properties={properties}
+          onSave={async (newProps) => {
+            await onUpdate(entity.name, { properties: newProps });
+          }}
+        />
+      </div>
 
-        <button className="panel-btn panel-btn-primary" disabled={busy} onClick={() => void handleSave()}>
-          {busy ? "Saving..." : "Save Changes"}
-        </button>
+      {/* ── Observations ── */}
+      <div className="panel-section">
+        <div className="sec-title">Observations ({observations.length})</div>
+        <ManageObservationsEditor
+          observations={observations}
+          onAdd={async (texts) => {
+            await onAddObservations(entity.name, texts);
+          }}
+          onUpdate={async (obsId, content) => {
+            await onUpdateObservation(obsId, entity.name, content);
+          }}
+          onDelete={async (obsId) => {
+            await onDeleteObservation(obsId, entity.name);
+          }}
+        />
+      </div>
 
-        {/* Delete — separate, clearly distinct */}
+      {/* ── Danger Zone ── */}
+      <div className="panel-section" style={{ borderBottom: "none" }}>
+        <div className="sec-title" style={{ borderLeftColor: "var(--color-danger)" }}>Danger Zone</div>
         <button
           className={`panel-btn ${confirmDelete ? "panel-btn-danger" : ""}`}
           disabled={busy}
           onClick={() => void handleDelete()}
-          style={{ gap: 5, marginTop: 4 }}
+          style={{ gap: 5 }}
         >
+          <IconTrash />
           {confirmDelete ? "Click again to confirm delete" : "Delete Entity"}
         </button>
         {confirmDelete && (
           <button
             className="panel-btn"
             onClick={() => setConfirmDelete(false)}
-            style={{ fontSize: 10 }}
+            style={{ fontSize: 10, marginTop: 4 }}
           >
             Cancel
           </button>
         )}
       </div>
+    </div>
+  );
+}
 
-      {/* Feedback */}
-      {feedback && (
-        <div style={{ fontSize: 11, marginTop: 8, color: feedback.ok ? "var(--color-success)" : "var(--color-danger)", textAlign: "center" }}>
-          {feedback.msg}
+
+// ══════════════════════════════════════════════════════════════════════
+// Properties editor for ManagePanel
+// ══════════════════════════════════════════════════════════════════════
+
+function ManagePropertiesEditor({ properties, onSave }: {
+  properties: [string, unknown][];
+  onSave: (props: Record<string, unknown>) => Promise<void>;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [newKey, setNewKey] = useState("");
+  const [newVal, setNewVal] = useState("");
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editVal, setEditVal] = useState("");
+  const [saving, setSaving] = useState(false);
+  const keyRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { if (adding && keyRef.current) keyRef.current.focus(); }, [adding]);
+
+  const handleAddProp = useCallback(async () => {
+    if (!newKey.trim()) return;
+    setSaving(true);
+    const updated: Record<string, unknown> = {};
+    for (const [k, v] of properties) updated[k] = v;
+    updated[newKey.trim()] = newVal;
+    try { await onSave(updated); setNewKey(""); setNewVal(""); setAdding(false); } finally { setSaving(false); }
+  }, [newKey, newVal, properties, onSave]);
+
+  const handleUpdateProp = useCallback(async (key: string) => {
+    setSaving(true);
+    const updated: Record<string, unknown> = {};
+    for (const [k, v] of properties) updated[k] = k === key ? editVal : v;
+    try { await onSave(updated); setEditingKey(null); } finally { setSaving(false); }
+  }, [editVal, properties, onSave]);
+
+  const handleDeleteProp = useCallback(async (key: string) => {
+    setSaving(true);
+    const updated: Record<string, unknown> = {};
+    for (const [k, v] of properties) { if (k !== key) updated[k] = v; }
+    try { await onSave(updated); } finally { setSaving(false); }
+  }, [properties, onSave]);
+
+  return (
+    <div className="detail-props-list">
+      {properties.map(([key, val]) => (
+        <div key={key} className="detail-prop-row">
+          <span className="detail-prop-key">{key}</span>
+          {editingKey === key ? (
+            <div className="detail-inline-edit" style={{ flex: 1 }}>
+              <input
+                className="detail-inline-input"
+                value={editVal}
+                onChange={(e) => setEditVal(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") void handleUpdateProp(key); if (e.key === "Escape") setEditingKey(null); }}
+                disabled={saving}
+                autoFocus
+                style={{ fontSize: 11 }}
+              />
+              <TinyBtn onClick={() => void handleUpdateProp(key)} title="Save" color="var(--color-success)"><IconCheck /></TinyBtn>
+              <TinyBtn onClick={() => setEditingKey(null)} title="Cancel"><IconCancel /></TinyBtn>
+            </div>
+          ) : (
+            <>
+              <span className="detail-prop-val">{String(val)}</span>
+              <div className="detail-prop-actions">
+                <TinyBtn onClick={() => { setEditingKey(key); setEditVal(String(val)); }} title="Edit"><IconEdit /></TinyBtn>
+                <TinyBtn onClick={() => void handleDeleteProp(key)} title="Delete" color="var(--color-danger)"><IconTrash /></TinyBtn>
+              </div>
+            </>
+          )}
+        </div>
+      ))}
+
+      {properties.length === 0 && !adding && (
+        <div style={{ fontSize: 11, color: "var(--color-text-muted)", fontStyle: "italic", padding: "4px 0" }}>
+          No properties
         </div>
       )}
 
-      {/* Hint */}
-      <div style={{ fontSize: 9, color: "var(--color-text-muted)", marginTop: 12, textAlign: "center", lineHeight: 1.5 }}>
-        For observations, properties & relationships, use the detail panel on the right.
+      {adding ? (
+        <div className="detail-add-prop-form">
+          <input ref={keyRef} className="detail-inline-input" placeholder="Key" value={newKey} onChange={(e) => setNewKey(e.target.value)} disabled={saving} style={{ flex: 1 }} />
+          <input className="detail-inline-input" placeholder="Value" value={newVal} onChange={(e) => setNewVal(e.target.value)} disabled={saving} style={{ flex: 1 }}
+            onKeyDown={(e) => { if (e.key === "Enter") void handleAddProp(); if (e.key === "Escape") setAdding(false); }}
+          />
+          <TinyBtn onClick={() => void handleAddProp()} title="Add" color="var(--color-success)" disabled={saving}><IconCheck /></TinyBtn>
+          <TinyBtn onClick={() => setAdding(false)} title="Cancel"><IconCancel /></TinyBtn>
+        </div>
+      ) : (
+        <button className="detail-add-btn" onClick={() => setAdding(true)}>
+          <IconSmallPlus /> Add property
+        </button>
+      )}
+    </div>
+  );
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// Observations editor for ManagePanel
+// ══════════════════════════════════════════════════════════════════════
+
+function ManageObservationsEditor({ observations, onAdd, onUpdate, onDelete }: {
+  observations: { id: string; content: string; source?: string; created_at?: string | number | null }[];
+  onAdd: (texts: string[]) => Promise<void>;
+  onUpdate: (obsId: string, content: string) => Promise<void>;
+  onDelete: (obsId: string) => Promise<void>;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [newObs, setNewObs] = useState("");
+  const [saving, setSaving] = useState(false);
+  const textRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => { if (adding && textRef.current) textRef.current.focus(); }, [adding]);
+
+  const handleAdd = useCallback(async () => {
+    const lines = newObs.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) return;
+    setSaving(true);
+    try { await onAdd(lines); setNewObs(""); setAdding(false); } finally { setSaving(false); }
+  }, [newObs, onAdd]);
+
+  return (
+    <div className="detail-obs-list">
+      {observations.map((obs, i) => (
+        <ManageObservationCard
+          key={obs.id || i}
+          obs={obs}
+          onUpdate={onUpdate}
+          onDelete={onDelete}
+        />
+      ))}
+
+      {observations.length === 0 && !adding && (
+        <div style={{ fontSize: 11, color: "var(--color-text-muted)", fontStyle: "italic", padding: "4px 0" }}>
+          No observations
+        </div>
+      )}
+
+      {adding ? (
+        <div className="detail-add-obs-form">
+          <textarea
+            ref={textRef}
+            className="detail-inline-textarea"
+            value={newObs}
+            onChange={(e) => setNewObs(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape") setAdding(false); }}
+            disabled={saving}
+            rows={3}
+            placeholder={"Add observations (one per line)\ne.g. Born in 1990\nSpeaks three languages"}
+          />
+          <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+            <button className="panel-btn panel-btn-primary" onClick={() => void handleAdd()} disabled={saving || !newObs.trim()} style={{ flex: 1, justifyContent: "center", gap: 4, fontSize: 10 }}>
+              <IconSmallPlus /> {saving ? "Adding..." : "Add"}
+            </button>
+            <button className="panel-btn" onClick={() => { setNewObs(""); setAdding(false); }} style={{ flex: 1, justifyContent: "center", fontSize: 10 }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button className="detail-add-btn" onClick={() => setAdding(true)}>
+          <IconSmallPlus /> Add observation
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ManageObservationCard({ obs, onUpdate, onDelete }: {
+  obs: { id: string; content: string; source?: string };
+  onUpdate: (obsId: string, content: string) => Promise<void>;
+  onDelete: (obsId: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(obs.content);
+  const [saving, setSaving] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const textRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => { setDraft(obs.content); }, [obs.content]);
+  useEffect(() => { if (editing && textRef.current) { textRef.current.focus(); textRef.current.setSelectionRange(textRef.current.value.length, textRef.current.value.length); } }, [editing]);
+
+  const save = useCallback(async () => {
+    if (!draft.trim() || draft === obs.content || !obs.id) { setEditing(false); return; }
+    setSaving(true);
+    try { await onUpdate(obs.id, draft.trim()); } finally { setSaving(false); setEditing(false); }
+  }, [draft, obs, onUpdate]);
+
+  const handleDelete = useCallback(async () => {
+    if (!obs.id) return;
+    if (!confirmDel) { setConfirmDel(true); return; }
+    setSaving(true);
+    try { await onDelete(obs.id); } finally { setSaving(false); setConfirmDel(false); }
+  }, [obs.id, confirmDel, onDelete]);
+
+  if (editing) {
+    return (
+      <div className="detail-obs-card detail-obs-card--editing">
+        <textarea
+          ref={textRef}
+          className="detail-inline-textarea"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Escape") { setDraft(obs.content); setEditing(false); } }}
+          disabled={saving}
+          rows={3}
+        />
+        <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+          <button className="panel-btn" onClick={() => void save()} disabled={saving} style={{ flex: 1, justifyContent: "center", gap: 4, fontSize: 10 }}>
+            <IconCheck /> {saving ? "Saving..." : "Save"}
+          </button>
+          <button className="panel-btn" onClick={() => { setDraft(obs.content); setEditing(false); }} style={{ flex: 1, justifyContent: "center", fontSize: 10 }}>
+            Cancel
+          </button>
+        </div>
       </div>
+    );
+  }
+
+  return (
+    <div className="detail-obs-card">
+      <div className="detail-obs-content" style={{ paddingRight: 40 }}>
+        {obs.content}
+      </div>
+      {obs.source && (
+        <div className="detail-obs-source">{obs.source}</div>
+      )}
+      {obs.id && (
+        <div className="detail-obs-actions">
+          <TinyBtn onClick={() => setEditing(true)} title="Edit observation"><IconEdit /></TinyBtn>
+          {confirmDel ? (
+            <>
+              <TinyBtn onClick={() => void handleDelete()} title="Confirm delete" color="var(--color-danger)"><IconCheck /></TinyBtn>
+              <TinyBtn onClick={() => setConfirmDel(false)} title="Cancel"><IconCancel /></TinyBtn>
+            </>
+          ) : (
+            <TinyBtn onClick={() => void handleDelete()} title="Delete observation" color="var(--color-danger)"><IconTrash /></TinyBtn>
+          )}
+        </div>
+      )}
     </div>
   );
 }
