@@ -9,6 +9,7 @@ abstract interface in its own module without touching any SQL.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Literal
@@ -155,9 +156,17 @@ class SQLiteBackend(StorageBackend):
             (limit, offset),
         )
 
+    # Columns that may be updated on the entities table via update_entity_fields.
+    _ENTITY_UPDATABLE_COLUMNS: frozenset[str] = frozenset(
+        {"name", "entity_type", "description", "properties", "updated_at"}
+    )
+
     async def update_entity_fields(self, entity_id: str, updates: dict[str, Any]) -> None:
         if not updates:
             return
+        bad_cols = set(updates) - self._ENTITY_UPDATABLE_COLUMNS
+        if bad_cols:
+            raise DatabaseError(f"Invalid column(s) for entity update: {bad_cols!r}")
         set_clauses = [f"{col} = ?" for col in updates]
         params = [*list(updates.values()), entity_id]
         sql = f"UPDATE entities SET {', '.join(set_clauses)} WHERE id = ?"
@@ -386,9 +395,17 @@ class SQLiteBackend(StorageBackend):
             (entity_id,),
         )
 
+    # Columns that may be updated on the relationships table.
+    _RELATIONSHIP_UPDATABLE_COLUMNS: frozenset[str] = frozenset(
+        {"source_id", "target_id", "relationship_type", "weight", "properties", "updated_at"}
+    )
+
     async def update_relationship(self, rel_id: str, updates: dict[str, Any]) -> None:
         if not updates:
             return
+        bad_cols = set(updates) - self._RELATIONSHIP_UPDATABLE_COLUMNS
+        if bad_cols:
+            raise DatabaseError(f"Invalid column(s) for relationship update: {bad_cols!r}")
         set_clauses = [f"{col} = ?" for col in updates]
         params = [*list(updates.values()), rel_id]
         sql = f"UPDATE relationships SET {', '.join(set_clauses)} WHERE id = ?"
@@ -578,8 +595,6 @@ class SQLiteBackend(StorageBackend):
         Returns:
             A safe FTS5 MATCH expression.
         """
-        import re
-
         stripped = query.strip()
         if not stripped:
             return '""'

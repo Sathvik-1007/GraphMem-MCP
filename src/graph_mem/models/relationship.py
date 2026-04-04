@@ -8,20 +8,9 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import SupportsFloat, cast
 
+from graph_mem.models.utils import safe_float
 from graph_mem.utils.ids import generate_id
-
-
-def _as_float(val: object, default: float = 0.0) -> float:
-    """Safely coerce a DB row value to *float*.
-
-    SQLite row dicts use ``dict[str, object]``, so ``.get()`` returns
-    ``object``.  This helper narrows the type for *mypy --strict*.
-    """
-    if val is None:
-        return default
-    return float(cast("SupportsFloat", val))
 
 
 @dataclass(slots=True)
@@ -72,10 +61,10 @@ class Relationship:
             source_id=str(row["source_id"]),
             target_id=str(row["target_id"]),
             relationship_type=str(row["relationship_type"]),
-            weight=_as_float(row.get("weight"), 1.0),
+            weight=safe_float(row.get("weight"), 1.0),
             properties=props,
-            created_at=_as_float(row.get("created_at")),
-            updated_at=_as_float(row.get("updated_at")),
+            created_at=safe_float(row.get("created_at")),
+            updated_at=safe_float(row.get("updated_at")),
         )
 
     def to_dict(self) -> dict[str, object]:

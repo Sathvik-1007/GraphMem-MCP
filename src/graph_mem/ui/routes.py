@@ -7,6 +7,7 @@ and ``search`` from ``request.app`` — no direct database connections.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
 
 from aiohttp import web
 
-from graph_mem.utils import get_logger
+from graph_mem.utils import GraphMemError, get_logger
 
 log = get_logger("ui.routes")
 
@@ -139,7 +140,7 @@ async def handle_entity(request: web.Request) -> web.Response:
         entity = await storage.get_entity_by_name(name)
         if entity is None:
             entity = await storage.get_entity_by_name_nocase(name)
-    except Exception as exc:
+    except (sqlite3.Error, GraphMemError) as exc:
         log.error("Error resolving entity %r: %s", name, exc)
         return web.json_response(
             {"error": f"Error resolving entity: {exc}", "name": name},
@@ -159,13 +160,13 @@ async def handle_entity(request: web.Request) -> web.Response:
     observations: list[dict] = []
     try:
         observations = await storage.get_observations_for_entity(entity_id)
-    except Exception as exc:
+    except (sqlite3.Error, GraphMemError) as exc:
         log.warning("Failed to fetch observations for %r: %s", name, exc)
 
     rel_rows: list[dict] = []
     try:
         rel_rows = await storage.get_relationships_for_entity(entity_id)
-    except Exception as exc:
+    except (sqlite3.Error, GraphMemError) as exc:
         log.warning("Failed to fetch relationships for %r: %s", name, exc)
 
     resp_observations = [
@@ -268,31 +269,31 @@ async def handle_stats(request: web.Request) -> web.Response:
 
     try:
         entity_count = await storage.count_entities()
-    except Exception:
+    except (sqlite3.Error, GraphMemError):
         entity_count = 0
     try:
         relationship_count = await storage.count_relationships()
-    except Exception:
+    except (sqlite3.Error, GraphMemError):
         relationship_count = 0
     try:
         observation_count = await storage.count_observations()
-    except Exception:
+    except (sqlite3.Error, GraphMemError):
         observation_count = 0
     try:
         entity_type_dist = await storage.entity_type_distribution()
-    except Exception:
+    except (sqlite3.Error, GraphMemError):
         entity_type_dist = {}
     try:
         rel_type_dist = await storage.relationship_type_distribution()
-    except Exception:
+    except (sqlite3.Error, GraphMemError):
         rel_type_dist = {}
     try:
         most_connected = await storage.most_connected_entities(limit=10)
-    except Exception:
+    except (sqlite3.Error, GraphMemError):
         most_connected = []
     try:
         recently_updated = await storage.recent_entities(limit=10)
-    except Exception:
+    except (sqlite3.Error, GraphMemError):
         recently_updated = []
 
     return web.json_response(
@@ -335,7 +336,7 @@ async def handle_create_entity(request: web.Request) -> web.Response:
 
     try:
         body = await request.json()
-    except Exception:
+    except (ValueError, TypeError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
     name = body.get("name", "").strip()
@@ -352,7 +353,7 @@ async def handle_create_entity(request: web.Request) -> web.Response:
         results = await graph.add_entities([entity])
         result = results[0] if results else None
         entity_id = result["id"] if result else name
-    except Exception as exc:
+    except (GraphMemError, ValueError, TypeError) as exc:
         log.error("Failed to create entity: %s", exc)
         return web.json_response({"error": str(exc)}, status=500)
 
@@ -374,7 +375,7 @@ async def handle_create_relationship(request: web.Request) -> web.Response:
 
     try:
         body = await request.json()
-    except Exception:
+    except (ValueError, TypeError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
     source_name = body.get("source", "").strip()
@@ -390,11 +391,11 @@ async def handle_create_relationship(request: web.Request) -> web.Response:
     # Resolve entity names to IDs via graph engine
     try:
         source_entity = await graph.resolve_entity(source_name)
-    except Exception:
+    except GraphMemError:
         return web.json_response({"error": f"Source entity '{source_name}' not found"}, status=404)
     try:
         target_entity = await graph.resolve_entity(target_name)
-    except Exception:
+    except GraphMemError:
         return web.json_response({"error": f"Target entity '{target_name}' not found"}, status=404)
 
     try:
@@ -407,7 +408,7 @@ async def handle_create_relationship(request: web.Request) -> web.Response:
         results = await graph.add_relationships([rel])
         result = results[0] if results else None
         rel_id = result["id"] if result else rel.id
-    except Exception as exc:
+    except (GraphMemError, ValueError, TypeError) as exc:
         log.error("Failed to create relationship: %s", exc)
         return web.json_response({"error": str(exc)}, status=500)
 
@@ -429,7 +430,7 @@ async def handle_create_observations(request: web.Request) -> web.Response:
 
     try:
         body = await request.json()
-    except Exception:
+    except (ValueError, TypeError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
     entity_name = body.get("entity_name", "").strip()
@@ -446,7 +447,7 @@ async def handle_create_observations(request: web.Request) -> web.Response:
 
     try:
         results = await graph.add_observations(entity_name, obs_objs)
-    except Exception as exc:
+    except (GraphMemError, ValueError) as exc:
         log.error("Failed to add observations: %s", exc)
         return web.json_response({"error": str(exc)}, status=500)
 
@@ -474,7 +475,7 @@ async def handle_update_entity(request: web.Request) -> web.Response:
 
     try:
         body = await request.json()
-    except Exception:
+    except (ValueError, TypeError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
     new_name = body.get("name")
@@ -496,7 +497,7 @@ async def handle_update_entity(request: web.Request) -> web.Response:
     except ValueError as exc:
         log.warning("Invalid update for entity %r: %s", name, exc)
         return web.json_response({"error": str(exc)}, status=400)
-    except Exception as exc:
+    except GraphMemError as exc:
         log.error("Failed to update entity %r: %s", name, exc)
         return web.json_response({"error": f"Internal error: {exc}"}, status=500)
 
@@ -530,7 +531,7 @@ async def handle_delete_entity(request: web.Request) -> web.Response:
     except EntityNotFoundError as exc:
         log.warning("Entity not found for deletion %r: %s", name, exc)
         return web.json_response({"error": f"Entity '{name}' not found"}, status=404)
-    except Exception as exc:
+    except GraphMemError as exc:
         log.error("Failed to delete entity %r: %s", name, exc, exc_info=True)
         return web.json_response({"error": f"Delete failed: {exc}"}, status=500)
 
@@ -577,7 +578,7 @@ def _quick_db_counts(db_file: Path) -> dict[str, int]:
             except sqlite3.OperationalError:
                 pass
         conn.close()
-    except Exception:
+    except (sqlite3.Error, OSError):
         pass
     return counts
 
@@ -639,7 +640,7 @@ async def handle_switch_graph(request: web.Request) -> web.Response:
 
     try:
         body = await request.json()
-    except Exception:
+    except (ValueError, TypeError):
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
     graph_name = body.get("name", "").strip()
@@ -650,8 +651,6 @@ async def handle_switch_graph(request: web.Request) -> web.Response:
         )
 
     # Sanitise: only alphanumeric, hyphens, underscores
-    import re
-
     if not re.match(r"^[a-zA-Z0-9_-]+$", graph_name):
         return web.json_response(
             {"error": "Invalid graph name (use a-z, 0-9, hyphens, underscores)"},
@@ -670,7 +669,7 @@ async def handle_switch_graph(request: web.Request) -> web.Response:
     if old_storage is not None:
         try:
             await old_storage.close()
-        except Exception as exc:
+        except (GraphMemError, OSError) as exc:
             log.warning("Error closing old storage: %s", exc)
 
     # Create new storage, graph, search engines
@@ -694,7 +693,7 @@ async def handle_switch_graph(request: web.Request) -> web.Response:
     )
     try:
         await embeddings.initialize(new_storage)
-    except Exception:
+    except (GraphMemError, OSError):
         log.warning("Embedding engine unavailable after switch")
 
     new_search = HybridSearch(new_storage, embeddings)

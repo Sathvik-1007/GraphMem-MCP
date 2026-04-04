@@ -12,7 +12,9 @@ to instantiate the configured backend (SQLite, Neo4j, Memgraph, etc.).
 
 from __future__ import annotations
 
+import re
 import socket
+import sqlite3
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -59,7 +61,7 @@ class AppState:
     _ui_url: str | None = None
     _ui_runner: Any | None = None
     # Multi-graph state
-    _graphmem_dir: Any | None = None  # Path to .graphmem/ directory
+    _graphmem_dir: Path | None = None  # Path to .graphmem/ directory
     _active_graph: str = "default"  # Currently active graph name
 
 
@@ -1004,7 +1006,7 @@ def _get_graphmem_dir() -> Path:
     d = _state._graphmem_dir
     if d is None:
         raise GraphMemError("Server not initialised.")
-    return Path(d) if not isinstance(d, Path) else d
+    return d
 
 
 async def _switch_engines(db_path: Path, graph_name: str) -> dict[str, Any]:
@@ -1077,14 +1079,12 @@ async def list_graphs() -> dict[str, Any]:
 
             # Open each DB briefly to get counts
             try:
-                import sqlite3
-
                 conn = sqlite3.connect(str(db_file))
                 ent_count = conn.execute("SELECT count(*) FROM entities").fetchone()[0]
                 rel_count = conn.execute("SELECT count(*) FROM relationships").fetchone()[0]
                 obs_count = conn.execute("SELECT count(*) FROM observations").fetchone()[0]
                 conn.close()
-            except Exception:
+            except (sqlite3.Error, OSError):
                 ent_count = rel_count = obs_count = -1
 
             graphs.append(
@@ -1109,7 +1109,7 @@ async def list_graphs() -> dict[str, Any]:
 
     except GraphMemError as exc:
         return _error_response(exc, tool_name="list_graphs")
-    except Exception as exc:
+    except (sqlite3.Error, OSError) as exc:
         log.exception("Failed to list graphs")
         return {"error": True, "error_type": type(exc).__name__, "message": str(exc)}
 
@@ -1128,8 +1128,6 @@ async def create_graph(
               Cannot be 'graph' (reserved for default).
     """
     try:
-        import re
-
         if not re.match(r"^[a-zA-Z0-9_-]+$", name):
             return {
                 "error": True,
@@ -1166,7 +1164,7 @@ async def create_graph(
 
     except GraphMemError as exc:
         return _error_response(exc, tool_name="create_graph")
-    except Exception as exc:
+    except (sqlite3.Error, OSError, ValueError) as exc:
         log.exception("Failed to create graph")
         return {"error": True, "error_type": type(exc).__name__, "message": str(exc)}
 
@@ -1214,7 +1212,7 @@ async def switch_graph(
 
     except GraphMemError as exc:
         return _error_response(exc, tool_name="switch_graph")
-    except Exception as exc:
+    except (sqlite3.Error, OSError) as exc:
         log.exception("Failed to switch graph")
         return {"error": True, "error_type": type(exc).__name__, "message": str(exc)}
 
@@ -1270,7 +1268,7 @@ async def delete_graph(
 
     except GraphMemError as exc:
         return _error_response(exc, tool_name="delete_graph")
-    except Exception as exc:
+    except OSError as exc:
         log.exception("Failed to delete graph")
         return {"error": True, "error_type": type(exc).__name__, "message": str(exc)}
 
@@ -1356,7 +1354,7 @@ async def open_dashboard(
 
     except GraphMemError as exc:
         return _error_response(exc, tool_name="open_dashboard")
-    except Exception as exc:
+    except (OSError, ImportError) as exc:
         log.exception("Failed to start dashboard")
         return {
             "error": True,

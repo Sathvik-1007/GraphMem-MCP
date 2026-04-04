@@ -17,6 +17,7 @@ from typing import Any, Literal, cast
 import click
 
 from graph_mem import __version__
+from graph_mem.cli.install import SUPPORTED_AGENTS as _SUPPORTED_AGENTS
 from graph_mem.utils import GraphMemError, get_logger, load_config, setup_logging
 
 log = get_logger("cli")
@@ -254,28 +255,6 @@ def server(
 
 
 # ── install ──────────────────────────────────────────────────────────────────
-
-_SUPPORTED_AGENTS = (
-    "claude",
-    "opencode",
-    "codex",
-    "gemini",
-    "cursor",
-    "windsurf",
-    "amp",
-    "antigravity",
-    "copilot",
-    "kiro",
-    "roocode",
-    "qoder",
-    "trae",
-    "continue",
-    "codebuddy",
-    "droid",
-    "kilocode",
-    "warp",
-    "augment",
-)
 
 
 @cli.command()
