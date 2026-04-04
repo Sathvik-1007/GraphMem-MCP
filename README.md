@@ -1,13 +1,13 @@
 # Graph-Mem MCP
 
-> Persistent knowledge graph memory for LLM-powered CLI agents
+> Persistent knowledge graph memory for AI agents and IDEs
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org)
 
-**No API keys. No cloud provider. No external services.** Graph-Mem MCP is a fully local MCP server that plugs into any MCP-compatible agent as a standard tool provider. Install it, add it to your MCP config, and your agent immediately gains persistent memory -- it decides what to store, when to search, and how to structure the knowledge graph. Nothing else required.
+Graph-Mem MCP is a universal MCP server that gives any agent or IDE persistent, structured memory through a knowledge graph. It combines graph storage, semantic vector search, and multi-hop traversal in a single package — install it, add it to your MCP config, and your agent gains memory that survives across sessions. It works everywhere MCP does.
 
-### Supported Agents
+### Works With
 
 <table>
 <tr>
@@ -35,7 +35,7 @@
 <td><b>Droid (Factory)</b></td>
 </tr>
 <tr>
-<td colspan="6"><b>Antigravity</b> · and any MCP-compatible agent</td>
+<td colspan="6"><b>Antigravity</b> · and any MCP-compatible agent, IDE, or framework</td>
 </tr>
 </table>
 
@@ -43,17 +43,96 @@
 
 ## What is this?
 
-LLM-powered coding agents forget everything between sessions. They re-read files, re-discover architecture, and repeat mistakes. **Graph-Mem MCP** fixes this by giving any MCP-compatible agent a persistent, per-project knowledge graph that combines graph storage, semantic vector search, and multi-hop traversal. The graph builds organically as the agent works -- extracting entities, decisions, and relationships from every conversation turn. It runs entirely locally -- no API provider accounts, no cloud dependencies, no Docker containers. Just `pip install graph-mem` and go.
+AI agents forget everything between sessions. They re-read files, re-discover architecture, and repeat mistakes. **Graph-Mem MCP** solves this by providing persistent, per-project knowledge graphs that any MCP-compatible agent can read and write to. The graph builds organically as the agent works — extracting entities, decisions, and relationships from every conversation. It runs as a standard MCP server with 23 tools that plug into any agent, IDE, or framework that supports the Model Context Protocol.
 
 ### Why a graph, not just a vector store?
 
-Vector search finds _similar_ things. Graphs find _connected_ things. When an agent asks "what depends on the auth service?", a vector store returns text that mentions auth. A knowledge graph traverses the actual dependency edges and returns every upstream consumer -- even ones that never mention "auth" in their description. graph-mem gives you both: vector similarity for fuzzy discovery, graph traversal for structural queries.
+Vector search finds _similar_ things. Graphs find _connected_ things. When an agent asks "what depends on the auth service?", a vector store returns text that mentions auth. A knowledge graph traverses the actual dependency edges and returns every upstream consumer — even ones that never mention "auth" in their description. Graph-Mem gives you both: vector similarity for fuzzy discovery, graph traversal for structural queries.
+
+### Use Cases
+
+- **Agent memory** — Give any AI coding agent persistent context across sessions
+- **IDE integration** — Add knowledge graph tools to Cursor, Windsurf, Copilot, or any MCP-enabled IDE
+- **Agent building** — Use as the memory layer when building custom AI agents and workflows
+- **Research & knowledge management** — Build structured knowledge bases with semantic search
+- **Multi-project context** — Maintain separate knowledge graphs per project with multi-graph support
 
 ---
 
-## For your agent's consideration...
+## Quick Start
 
-Paste this prompt into your agent:
+**1. Install:**
+
+```bash
+pip install graph-mem
+```
+
+**2. Install the skill for your agent:**
+
+```bash
+graph-mem install opencode      # OpenCode
+graph-mem install claude        # Claude Code
+graph-mem install cursor        # Cursor
+graph-mem install windsurf      # Windsurf
+graph-mem install codex         # Codex CLI
+graph-mem install gemini        # Gemini CLI
+graph-mem install copilot       # GitHub Copilot
+graph-mem install amp           # Amp
+graph-mem install kiro          # Kiro
+graph-mem install roocode       # Roo Code
+graph-mem install trae          # Trae
+graph-mem install augment       # Augment
+graph-mem install continue      # Continue
+graph-mem install warp          # Warp
+graph-mem install kilocode      # KiloCode
+graph-mem install qoder         # Qoder
+graph-mem install codebuddy     # CodeBuddy
+graph-mem install droid         # Droid (Factory)
+graph-mem install antigravity   # Antigravity
+```
+
+This writes a skill file that teaches your agent how to use all 23 MCP tools — when to search, when to add entities, naming conventions, and common workflows.
+
+**3. Configure MCP** by adding this to your agent's MCP config:
+
+```json
+{
+  "mcpServers": {
+    "graph-mem": {
+      "command": "graph-mem",
+      "args": ["server"]
+    }
+  }
+}
+```
+
+With full customization:
+
+```json
+{
+  "mcpServers": {
+    "graph-mem": {
+      "command": "graph-mem",
+      "args": [
+        "server",
+        "--project-dir", "/path/to/my/project",
+        "--embedding-model", "sentence-transformers/all-mpnet-base-v2",
+        "--use-onnx",
+        "--cache-size", "20000",
+        "--log-level", "INFO"
+      ]
+    }
+  }
+}
+```
+
+That's it. Your agent now has persistent memory. Verify by asking it to run `read_graph()`.
+
+---
+
+## One-Prompt Setup
+
+Paste this into your agent's chat to get started immediately:
 
 ```
 I want you to give yourself persistent memory using graph-mem. Run the following:
@@ -126,74 +205,9 @@ pip install "graph-mem[full]"         # all of the above
 
 ---
 
-## Quick Start
-
-**1. Install the skill for your agent:**
-
-```bash
-graph-mem install claude        # Claude Code
-graph-mem install opencode      # OpenCode
-graph-mem install cursor        # Cursor
-graph-mem install windsurf      # Windsurf
-graph-mem install codex         # Codex CLI
-graph-mem install gemini        # Gemini CLI
-graph-mem install copilot       # GitHub Copilot
-graph-mem install amp           # Amp
-graph-mem install kiro          # Kiro
-graph-mem install roocode       # Roo Code
-graph-mem install trae          # Trae
-graph-mem install augment       # Augment
-graph-mem install continue      # Continue
-graph-mem install warp          # Warp
-graph-mem install kilocode      # KiloCode
-graph-mem install qoder         # Qoder
-graph-mem install codebuddy     # CodeBuddy
-graph-mem install droid         # Droid (Factory)
-graph-mem install antigravity   # Antigravity
-```
-
-This writes a skill file that teaches your agent how to use all 23 MCP tools -- when to search, when to add entities, naming conventions, and common workflows.
-
-**2. Configure MCP** by adding this to your agent's MCP config:
-
-```json
-{
-  "mcpServers": {
-    "graph-mem": {
-      "command": "graph-mem",
-      "args": ["server"]
-    }
-  }
-}
-```
-
-With full customization:
-
-```json
-{
-  "mcpServers": {
-    "graph-mem": {
-      "command": "graph-mem",
-      "args": [
-        "server",
-        "--project-dir", "/path/to/my/project",
-        "--embedding-model", "sentence-transformers/all-mpnet-base-v2",
-        "--use-onnx",
-        "--cache-size", "20000",
-        "--log-level", "INFO"
-      ]
-    }
-  }
-}
-```
-
-That's it. Your agent now has persistent memory.
-
----
-
 ## Tools
 
-graph-mem exposes **23 MCP tools** -- ten for writing, eight for reading, four for multi-graph management, and one utility. Full CRUD on every primitive: entities, relationships, and observations can all be created, read, updated, and deleted.
+Graph-Mem exposes **23 MCP tools** — ten for writing, eight for reading, four for multi-graph management, and one utility. Full CRUD on every primitive: entities, relationships, and observations can all be created, read, updated, and deleted.
 
 ### Write Tools (10)
 
@@ -246,7 +260,7 @@ graph-mem exposes **23 MCP tools** -- ten for writing, eight for reading, four f
 
 ```mermaid
 graph TD
-    Agent[MCP-Compatible Agent] --> Transport
+    Agent[Any MCP-Compatible Agent or IDE] --> Transport
 
     subgraph Transport
         STDIO[stdio]
@@ -286,25 +300,50 @@ graph TD
     Dashboard --> DB
 ```
 
-Everything lives in a single SQLite database per project. No external services, no Docker containers, no API keys. The server communicates over MCP's standard stdio transport (SSE also supported) and stores all data in `.graphmem/graph.db` at your project root. The database file is portable -- copy it between machines, check it into version control, or back it up like any other file.
+Everything lives in a single SQLite database per project. The server communicates over MCP's standard stdio transport (SSE and streamable-http also supported) and stores all data in `.graphmem/graph.db` at your project root. The database file is portable — copy it between machines, check it into version control, or back it up like any other file.
 
-For detailed technical documentation -- data model, search pipeline, entity resolution, storage architecture, and request flow diagrams -- see **[How It Works](how-it-works.md)**.
+For detailed technical documentation — data model, search pipeline, entity resolution, storage architecture, and request flow diagrams — see **[How It Works](how-it-works.md)**.
 
 ---
 
 ## MCP Integration
 
-Graph-Mem MCP is a standard MCP (Model Context Protocol) server. It does not require any external provider, API key, or cloud account. It communicates with your agent over the MCP protocol (stdio by default, SSE and streamable-http also supported) and exposes 23 tools that the agent can call directly.
+Graph-Mem MCP is a standard MCP server. It communicates with your agent over the Model Context Protocol (stdio by default, SSE and streamable-http also supported) and exposes 23 tools that the agent calls directly — the same way it calls any other MCP tool. It works with every MCP-compatible agent, IDE, and framework out of the box.
 
-**What this means in practice:** once you add Graph-Mem MCP to your agent's MCP config, the agent sees 23 new tools in its tool list. The agent calls these tools the same way it calls any other MCP tool -- no special SDK, no provider integration, no authentication. It works with every MCP-compatible agent out of the box.
+To verify it's working, ask your agent to run `read_graph()` — it should return the current graph statistics.
 
-To verify it's working, ask your agent to run `read_graph()` -- it should return the current graph statistics.
+---
+
+## Graph Visualisation
+
+```bash
+graph-mem ui                              # open interactive graph explorer
+graph-mem ui --no-open                    # start server without opening browser
+graph-mem ui --port 9090                  # use a specific port
+graph-mem ui --graph harry-potter         # open a specific named graph
+```
+
+The `open_dashboard` MCP tool also starts this UI server and returns the URL directly to your agent.
+
+**Dashboard features:**
+- **Force-directed graph canvas** with real-time physics simulation
+- **Entity type filtering** — toggle visibility of entity types via sidebar checkboxes
+- **Click-to-focus** — click a node on the graph or sidebar to instantly center and zoom to it
+- **Inline entity editing** — click any field (name, type, description) in the detail panel to edit it in-place
+- **Property management** — add, edit, and delete individual properties per entity with per-row controls
+- **Observation management** — add, edit, and delete observations with confirmation dialogs and inline editing
+- **Relationship navigation** — click related entities to navigate the graph
+- **Entity creation and deletion** — create new entities from the sidebar, delete with confirmation from the detail panel danger zone
+- **Hybrid search** — semantic + keyword search across all entities
+- **Graph picker** — switch between named graphs without restarting the server
+- **Physics controls** — adjust spring, repulsion, damping, and gravity in real-time
+- **Keyboard shortcuts** — Space (reheat), F (fit to view), Escape (deselect)
 
 ---
 
 ## Data Storage
 
-By default, graph-mem stores its database at `.graphmem/graph.db` relative to the current working directory. You can control this with:
+By default, Graph-Mem stores its database at `.graphmem/graph.db` relative to the current working directory. You can control this with:
 
 | Method | Example | Result |
 |--------|---------|--------|
@@ -387,32 +426,6 @@ All management commands accept `--db`, `--project-dir`, and `--graph` for target
 
 **Multi-graph support**: Use `--graph <name>` to work with named graphs stored as `.graphmem/<name>.db`. Without `--graph`, commands target the default `graph.db`. The MCP tools `list_graphs`, `create_graph`, `switch_graph`, and `delete_graph` provide runtime graph management for agents.
 
-### Graph Visualisation UI
-
-```bash
-graph-mem ui                              # open interactive graph explorer
-graph-mem ui --no-open                    # start server without opening browser
-graph-mem ui --port 9090                  # use a specific port
-graph-mem ui --graph harry-potter         # open a specific named graph
-```
-
-The `open_dashboard` MCP tool also starts this UI server and returns the URL directly to your agent.
-
-**Dashboard features:**
-- **Force-directed graph canvas** with real-time physics simulation
-- **Entity type filtering** — toggle visibility of entity types via sidebar checkboxes
-- **Click-to-focus** — click a node on the graph or sidebar to instantly center and zoom to it
-- **Inline entity editing** — click any field (name, type, description) in the detail panel to edit it in-place
-- **Property management** — add, edit, and delete individual properties per entity with per-row controls
-- **Observation management** — add, edit, and delete observations with confirmation dialogs and inline editing
-- **Relationship navigation** — click related entities to navigate the graph
-- **Entity creation and deletion** — create new entities from the sidebar, delete with confirmation from the detail panel danger zone
-- **Hybrid search** — semantic + keyword search across all entities
-- **Graph picker** — switch between named graphs without restarting the server
-- **Physics controls** — adjust spring, repulsion, damping, and gravity in real-time
-- **Keyboard shortcuts** — Space (reheat), F (fit to view), Escape (deselect)
-- **Robust error handling** — proper HTTP status codes (404 for missing entities, 400 for invalid operations, 201 for creation)
-
 ---
 
 ## Configuration
@@ -436,13 +449,13 @@ All settings are optional. Defaults work out of the box. Every setting can be co
 
 ## Performance
 
-- **WAL mode + PRAGMA tuning** -- concurrent reads with fast writes, optimized journal and cache settings
-- **ONNX-optimized embeddings** -- ~3x faster inference than default PyTorch, with automatic fallback
-- **Content-hash embedding cache** -- identical text is never embedded twice
-- **Background model pre-warming** -- embedding model loads in a background thread during startup
-- **Thread-safe lazy loading** -- double-check locking for safe concurrent access
-- **Memory-mapped I/O** -- large databases stay fast without consuming proportional RAM
-- **Batch transactions** -- bulk operations execute in a single transaction
+- **WAL mode + PRAGMA tuning** — concurrent reads with fast writes, optimized journal and cache settings
+- **ONNX-optimized embeddings** — ~3x faster inference than default PyTorch, with automatic fallback
+- **Content-hash embedding cache** — identical text is never embedded twice
+- **Background model pre-warming** — embedding model loads in a background thread during startup
+- **Thread-safe lazy loading** — double-check locking for safe concurrent access
+- **Memory-mapped I/O** — large databases stay fast without consuming proportional RAM
+- **Batch transactions** — bulk operations execute in a single transaction
 
 ---
 
