@@ -144,7 +144,6 @@ function drawEdges(
   light: boolean,
 ): void {
   const { hoveredNode, selectedNode, adj } = state;
-  const hlNeighbors = hoveredNode ? adj.get(hoveredNode.id) ?? null : null;
   const selNeighbors = selectedNode ? adj.get(selectedNode) ?? null : null;
 
   for (const e of edges) {
@@ -155,13 +154,10 @@ function drawEdges(
     const a = nodes[ai]!;
     const b = nodes[bi]!;
 
-    // Determine highlight state
+    // Determine highlight state — edge highlights only if hovered node is an endpoint
     const isHoverHL =
-      hlNeighbors !== null &&
-      (a.id === hoveredNode!.id ||
-        b.id === hoveredNode!.id ||
-        hlNeighbors.has(a.id) ||
-        hlNeighbors.has(b.id));
+      hoveredNode !== null &&
+      (a.id === hoveredNode.id || b.id === hoveredNode.id);
 
     const isSelHL =
       selNeighbors !== null &&
