@@ -216,26 +216,6 @@ export default function DetailPanel({
               />
             </div>
 
-            {/* Observations — editable cards + add */}
-            <div className="panel-section">
-              <div className="sec-title">Observations ({observations.length})</div>
-              <ObservationsEditor
-                observations={observations}
-                entityName={entity.name}
-                allEntityNames={allEntityNames}
-                onNavigate={onNavigate}
-                onAdd={onAddObservations ? async (texts) => {
-                  await onAddObservations(entity.name, texts);
-                } : undefined}
-                onUpdate={onUpdateObservation ? async (obsId, content) => {
-                  await onUpdateObservation(obsId, entity.name, content);
-                } : undefined}
-                onDelete={onDeleteObservation ? async (obsId) => {
-                  await onDeleteObservation(obsId, entity.name);
-                } : undefined}
-              />
-            </div>
-
             {/* Relationships */}
             {(outgoing.length > 0 || incoming.length > 0) && (
               <div className="panel-section">
@@ -260,6 +240,26 @@ export default function DetailPanel({
                 )}
               </div>
             )}
+
+            {/* Observations — editable cards + add */}
+            <div className="panel-section">
+              <div className="sec-title">Observations ({observations.length})</div>
+              <ObservationsEditor
+                observations={observations}
+                entityName={entity.name}
+                allEntityNames={allEntityNames}
+                onNavigate={onNavigate}
+                onAdd={onAddObservations ? async (texts) => {
+                  await onAddObservations(entity.name, texts);
+                } : undefined}
+                onUpdate={onUpdateObservation ? async (obsId, content) => {
+                  await onUpdateObservation(obsId, entity.name, content);
+                } : undefined}
+                onDelete={onDeleteObservation ? async (obsId) => {
+                  await onDeleteObservation(obsId, entity.name);
+                } : undefined}
+              />
+            </div>
 
             {/* ── Danger zone ── */}
             {onDeleteEntity && (
