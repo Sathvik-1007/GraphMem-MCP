@@ -76,10 +76,15 @@ export default function GraphCanvas({
       const engine = engineRef.current;
       const node = engine.nodes.find((n) => n.id === selectedNodeId);
       if (node) {
+        // Selecting a node opens the detail panel on the right.
+        // Shift the pan target so the node centers in the *available* canvas area
+        // between the left sidebar and the right detail panel.
         const sidebarPx = sidebarExpandedRef.current ? 300 : 48;
-        const sidebarWorldOffset = sidebarPx / 2 / viewRef.current.zoom;
+        const detailPx = Math.min(360, window.innerWidth * 0.3);
+        const offsetPx = (sidebarPx - detailPx) / 2;
+        const offsetWorld = offsetPx / viewRef.current.zoom;
         panAnimRef.current = {
-          tx: -node.x + sidebarWorldOffset,
+          tx: -node.x + offsetWorld,
           ty: -node.y,
         };
         selectedAnimRef.current = 1.0;
@@ -400,14 +405,17 @@ export default function GraphCanvas({
         const nd = drag.node;
         onSelectRef.current(nd.id);
 
-        // Compute sidebar offset in world coords
-        // When sidebar is expanded, the visual center shifts right by half the sidebar width
+        // Selecting a node opens the detail panel on the right.
+        // Shift the pan target so the node centers in the *available* canvas area
+        // between the left sidebar and the right detail panel.
         const sidebarPx = sidebarExpandedRef.current ? 300 : 48;
-        const sidebarWorldOffset = sidebarPx / 2 / viewRef.current.zoom;
+        const detailPx = Math.min(360, window.innerWidth * 0.3);
+        const offsetPx = (sidebarPx - detailPx) / 2;
+        const offsetWorld = offsetPx / viewRef.current.zoom;
 
         // Animate pan so the node ends up at the visual center
         panAnimRef.current = {
-          tx: -nd.x + sidebarWorldOffset,
+          tx: -nd.x + offsetWorld,
           ty: -nd.y,
         };
         // Trigger pulse ring animation
