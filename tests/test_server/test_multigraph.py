@@ -6,13 +6,15 @@ open_dashboard, _require_state, _error_response, create_server.
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, patch
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
+from mcp.server.fastmcp import FastMCP
 
 import graph_mem.server as server_mod
 from graph_mem.graph.engine import GraphEngine
@@ -33,7 +35,6 @@ from graph_mem.server import (
 from graph_mem.utils import GraphMemError
 from graph_mem.utils.config import Config
 from graph_mem.utils.errors import EntityNotFoundError
-from mcp.server.fastmcp import FastMCP
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -110,7 +111,15 @@ async def setup_server(tmp_path: Path):
 
     yield graphmem_dir
 
-    await storage.close()
+    # Close whichever storage is currently active (may differ from original
+    # if switch_graph replaced it). The original is already closed by
+    # _switch_engines; closing twice is harmless on SQLiteBackend.
+    current_storage = server_mod._state.storage
+    if current_storage is not None:
+        await current_storage.close()
+    if current_storage is not storage:
+        with contextlib.suppress(Exception):
+            await storage.close()
     server_mod._state.storage = None
     server_mod._state.graph = None
     server_mod._state.traversal = None
