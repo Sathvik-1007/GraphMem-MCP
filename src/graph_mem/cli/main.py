@@ -304,6 +304,52 @@ def install(agent: str, scope: str, project_dir: str | None, domain: str) -> Non
         raise SystemExit(1) from exc
 
 
+# ── uninstall ────────────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.argument("agent", type=click.Choice(_SUPPORTED_AGENTS))
+@click.option(
+    "--global",
+    "scope",
+    flag_value="global",
+    help="Uninstall the skill globally.",
+)
+@click.option(
+    "--project",
+    "scope",
+    flag_value="project",
+    default=True,
+    help="Uninstall the skill for the current project (default).",
+)
+@click.option(
+    "--project-dir",
+    "project_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Project root directory for skill uninstallation.",
+)
+def uninstall(agent: str, scope: str, project_dir: str | None) -> None:
+    """Uninstall agent skill configuration for AGENT.
+
+    Removes the skill file or section that was installed by the
+    ``install`` command.
+    """
+    try:
+        from graph_mem.cli.install import uninstall_skill  # lazy import
+
+        pd = Path(project_dir) if project_dir else None
+        removed: bool = uninstall_skill(agent=agent, scope=scope, project_dir=pd)
+        if removed:
+            click.secho(f"Uninstalled {agent} skill ({scope}).", fg="green")
+        else:
+            click.secho(f"No {agent} skill found to uninstall ({scope}).", fg="yellow")
+    except GraphMemError as exc:
+        log.debug("Uninstall command failed: %s", exc, exc_info=True)
+        _print_error(str(exc))
+        raise SystemExit(1) from exc
+
+
 # ── init ─────────────────────────────────────────────────────────────────────
 
 
@@ -490,40 +536,47 @@ def export(
         storage, graph = await _open_db(db_path, project_dir, graph_name)
         try:
             entities = await graph.list_entities(limit=1_000_000)
-            all_relationships: list[dict[str, Any]] = []
-            all_observations: list[dict[str, Any]] = []
 
-            # Fetch relationships and observations for each entity
-            skipped: list[str] = []
-            for entity in entities:
-                try:
-                    rels = await graph.get_relationships(entity.name)
-                    all_relationships.extend(rels)
-                except GraphMemError as exc:
-                    log.warning("Export: skipping relationships for %r: %s", entity.name, exc)
-                    skipped.append(f"relationships:{entity.name}")
-                try:
-                    obs = await graph.get_observations(entity.name)
-                    all_observations.extend([o.to_dict() for o in obs])
-                except GraphMemError as exc:
-                    log.warning("Export: skipping observations for %r: %s", entity.name, exc)
-                    skipped.append(f"observations:{entity.name}")
+            # Batch-fetch ALL relationships and observations in 2 queries (not N+1)
+            all_relationships_raw = await storage.fetch_all(
+                """
+                SELECT r.*,
+                       s.name AS source_name, s.entity_type AS source_type,
+                       t.name AS target_name, t.entity_type AS target_type
+                FROM relationships r
+                JOIN entities s ON s.id = r.source_id
+                JOIN entities t ON t.id = r.target_id
+                ORDER BY r.updated_at DESC
+                """
+            )
+            all_observations_raw = await storage.fetch_all(
+                "SELECT * FROM observations ORDER BY created_at DESC"
+            )
 
-            # Deduplicate relationships by id
-            seen_rel_ids: set[str] = set()
+            # Convert to serializable dicts
+            from graph_mem.models.observation import Observation
+            from graph_mem.models.relationship import Relationship
+
             unique_rels: list[dict[str, Any]] = []
-            for rel in all_relationships:
-                rid = str(rel["id"])
-                if rid not in seen_rel_ids:
-                    seen_rel_ids.add(rid)
-                    unique_rels.append(rel)
+            for row in all_relationships_raw:
+                rel = Relationship.from_row(row)
+                d = rel.to_dict()
+                d["source_name"] = str(row["source_name"])
+                d["source_type"] = str(row["source_type"])
+                d["target_name"] = str(row["target_name"])
+                d["target_type"] = str(row["target_type"])
+                unique_rels.append(d)
+
+            all_observations: list[dict[str, Any]] = [
+                Observation.from_row(r).to_dict() for r in all_observations_raw
+            ]
 
             return {
                 "version": __version__,
                 "entities": [e.to_dict() for e in entities],
                 "relationships": unique_rels,
                 "observations": all_observations,
-                "skipped": skipped,
+                "skipped": [],
             }
         finally:
             await storage.close()
@@ -555,7 +608,7 @@ def export(
         click.echo(payload)
 
     skipped_items: list[str] = data.get("skipped", [])
-    if skipped_items:
+    if skipped_items:  # pragma: no cover — bulk export doesn't skip
         click.secho(
             f"Warning: {len(skipped_items)} item(s) skipped during export:", fg="yellow", err=True
         )

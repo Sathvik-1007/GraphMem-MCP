@@ -12,6 +12,7 @@ or any other registered backend.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
@@ -423,6 +424,7 @@ class GraphEngine:
         """Delete specific observations from an entity.
 
         Validates that the observations belong to the entity before deleting.
+        Also cleans up observation embeddings in the storage layer.
 
         Returns:
             Count of observations deleted.
@@ -446,6 +448,9 @@ class GraphEngine:
                     )
                     continue
                 if await self._storage.delete_observation(obs_id):
+                    # Clean up embedding — vec table may not exist
+                    with contextlib.suppress(Exception):
+                        await self._storage.delete_observation_embedding(obs_id)
                     deleted += 1
 
         log.info(
@@ -514,8 +519,6 @@ class GraphEngine:
         Returns:
             Dict with the updated relationship details.
         """
-        import json as _json
-
         source_entity = await self.resolve_entity(source)
         target_entity = await self.resolve_entity(target)
 
@@ -533,9 +536,9 @@ class GraphEngine:
         if new_type is not None:
             updates["relationship_type"] = new_type
         if properties is not None:
-            old_props = _json.loads(str(existing.get("properties", "{}")))
+            old_props = json.loads(str(existing.get("properties", "{}")))
             merged = {**old_props, **properties}
-            updates["properties"] = _json.dumps(merged, ensure_ascii=False, default=str)
+            updates["properties"] = json.dumps(merged, ensure_ascii=False, default=str)
 
         rel_id = str(existing["id"])
         async with self._storage.transaction():

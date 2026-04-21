@@ -7,8 +7,11 @@ and ``search`` from ``request.app`` — no direct database connections.
 
 from __future__ import annotations
 
+import asyncio
+import json as _json
 import re
 import sqlite3
+from pathlib import Path as _Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
@@ -17,7 +20,14 @@ if TYPE_CHECKING:
 
 from aiohttp import web
 
-from graph_mem.utils import GraphMemError, get_logger
+from graph_mem.graph.engine import GraphEngine
+from graph_mem.models.entity import Entity
+from graph_mem.models.observation import Observation
+from graph_mem.models.relationship import Relationship
+from graph_mem.semantic import EmbeddingEngine, HybridSearch
+from graph_mem.storage import create_backend
+from graph_mem.utils import GraphMemError, get_logger, load_config
+from graph_mem.utils.errors import EntityNotFoundError
 
 log = get_logger("ui.routes")
 
@@ -331,8 +341,6 @@ async def handle_stats(request: web.Request) -> web.Response:
 
 async def handle_create_entity(request: web.Request) -> web.Response:
     """Create a new entity from the UI."""
-    from graph_mem.models.entity import Entity
-
     graph = request.app.get("graph")
     if graph is None:
         return web.json_response({"error": "Graph engine not available"}, status=500)
@@ -370,8 +378,6 @@ async def handle_create_entity(request: web.Request) -> web.Response:
 
 async def handle_create_relationship(request: web.Request) -> web.Response:
     """Create a new relationship between two entities from the UI."""
-    from graph_mem.models.relationship import Relationship
-
     graph = request.app.get("graph")
     if graph is None:
         return web.json_response({"error": "Graph engine not available"}, status=500)
@@ -425,8 +431,6 @@ async def handle_create_relationship(request: web.Request) -> web.Response:
 
 async def handle_create_observations(request: web.Request) -> web.Response:
     """Add observations to an existing entity from the UI."""
-    from graph_mem.models.observation import Observation
-
     graph = request.app.get("graph")
     if graph is None:
         return web.json_response({"error": "Graph engine not available"}, status=500)
@@ -532,8 +536,6 @@ async def handle_delete_observation(request: web.Request) -> web.Response:
 
 async def handle_update_entity(request: web.Request) -> web.Response:
     """Update an existing entity's description, type, name, or properties."""
-    from graph_mem.utils.errors import EntityNotFoundError
-
     graph = request.app.get("graph")
     if graph is None:
         return web.json_response({"error": "Graph engine not available"}, status=500)
@@ -585,8 +587,6 @@ async def handle_update_entity(request: web.Request) -> web.Response:
 
 async def handle_delete_entity(request: web.Request) -> web.Response:
     """Delete an entity and its observations/relationships."""
-    from graph_mem.utils.errors import EntityNotFoundError
-
     graph = request.app.get("graph")
     if graph is None:
         return web.json_response({"error": "Graph engine not available"}, status=500)
@@ -614,10 +614,8 @@ async def handle_delete_entity(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
-def _get_graphmem_dir(app: web.Application) -> Path | None:
+def _get_graphmem_dir(app: web.Application) -> _Path | None:
     """Return the .graphmem directory from app config, or None."""
-    from pathlib import Path as _Path
-
     db_path = app.get("db_path")
     if db_path:
         p = _Path(str(db_path))
@@ -626,9 +624,8 @@ def _get_graphmem_dir(app: web.Application) -> Path | None:
     return None
 
 
-async def _quick_db_counts(db_file: Path) -> dict[str, int]:
+async def _quick_db_counts(db_file: _Path) -> dict[str, int]:
     """Open a .db file briefly with sqlite3 to get entity/rel/obs counts."""
-    import asyncio
 
     def _sync_counts() -> dict[str, int]:
         counts: dict[str, int] = {
@@ -664,8 +661,6 @@ async def handle_list_graphs(request: web.Request) -> web.Response:
 
     # Determine active graph name from current db_path
     db_path = request.app.get("db_path", "")
-    from pathlib import Path as _Path
-
     active_file = _Path(str(db_path)).name if db_path else ""
     active_name = active_file.removesuffix(".db") if active_file else ""
 
@@ -740,8 +735,6 @@ async def handle_switch_graph(request: web.Request) -> web.Response:
     # Close old storage
     switch_lock = request.app.get("switch_lock")
     if switch_lock is None:
-        import asyncio
-
         switch_lock = asyncio.Lock()
         request.app["switch_lock"] = switch_lock
 
@@ -754,11 +747,6 @@ async def handle_switch_graph(request: web.Request) -> web.Response:
                 log.warning("Error closing old storage: %s", exc)
 
         # Create new storage, graph, search engines
-        from graph_mem.graph.engine import GraphEngine
-        from graph_mem.semantic import EmbeddingEngine, HybridSearch
-        from graph_mem.storage import create_backend
-        from graph_mem.utils import load_config
-
         config = load_config()
         new_storage = create_backend(
             config.backend_type,
@@ -873,8 +861,6 @@ def _safe_json(value: object) -> object:
     a real object instead of a raw string that the frontend would iterate
     character-by-character.
     """
-    import json as _json
-
     if isinstance(value, str):
         stripped = value.strip()
         if stripped and stripped[0] in ("{", "["):

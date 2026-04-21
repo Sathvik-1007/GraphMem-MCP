@@ -8,6 +8,7 @@ abstract interface in its own module without touching any SQL.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import sqlite3
@@ -174,24 +175,21 @@ class SQLiteBackend(StorageBackend):
         await self._require_db().execute(sql, tuple(params))
 
     async def delete_entity(self, entity_id: str) -> None:
-        import contextlib
-
         db = self._require_db()
-        # Clean up embeddings first (vec tables may not exist — ignore errors)
-        # Observation embeddings: need to get obs IDs first
-        with contextlib.suppress(Exception):
-            obs_rows = await db.fetch_all(
-                "SELECT id FROM observations WHERE entity_id = ?", (entity_id,)
-            )
-            for obs_row in obs_rows:
-                with contextlib.suppress(Exception):
-                    await db.execute(
-                        "DELETE FROM observation_embeddings WHERE id = ?",
-                        (str(obs_row["id"]),),
-                    )
-        # Entity embedding
-        with contextlib.suppress(Exception):
-            await db.execute("DELETE FROM entity_embeddings WHERE id = ?", (entity_id,))
+        # Clean up embeddings first (vec tables may not exist — only ignore OperationalError)
+        if self._vec_available:
+            with contextlib.suppress(sqlite3.OperationalError, DatabaseError):
+                obs_rows = await db.fetch_all(
+                    "SELECT id FROM observations WHERE entity_id = ?", (entity_id,)
+                )
+                for obs_row in obs_rows:
+                    with contextlib.suppress(sqlite3.OperationalError, DatabaseError):
+                        await db.execute(
+                            "DELETE FROM observation_embeddings WHERE id = ?",
+                            (str(obs_row["id"]),),
+                        )
+            with contextlib.suppress(sqlite3.OperationalError, DatabaseError):
+                await db.execute("DELETE FROM entity_embeddings WHERE id = ?", (entity_id,))
         # Now delete observations, relationships, and entity
         await db.execute("DELETE FROM observations WHERE entity_id = ?", (entity_id,))
         await db.execute(
@@ -213,12 +211,15 @@ class SQLiteBackend(StorageBackend):
 
     async def most_connected_entities(self, limit: int = 10) -> list[dict[str, Any]]:
         return await self._require_db().fetch_all(
-            "SELECT e.id, e.name, e.entity_type, "
-            "  (SELECT COUNT(*) FROM relationships WHERE source_id = e.id) + "
-            "  (SELECT COUNT(*) FROM relationships WHERE target_id = e.id) AS degree "
-            "FROM entities e "
-            "ORDER BY degree DESC "
-            "LIMIT ?",
+            """
+            SELECT e.id, e.name, e.entity_type, COUNT(r.id) AS degree
+            FROM entities e
+            LEFT JOIN relationships r
+              ON r.source_id = e.id OR r.target_id = e.id
+            GROUP BY e.id
+            ORDER BY degree DESC
+            LIMIT ?
+            """,
             (limit,),
         )
 
@@ -640,7 +641,7 @@ class SQLiteBackend(StorageBackend):
         try:
             rows = await self._require_db().fetch_all(
                 """
-                SELECT o.id
+                SELECT o.id, rank
                 FROM observations_fts fts
                 JOIN observations o ON o.rowid = fts.rowid
                 WHERE observations_fts MATCH ?
@@ -649,7 +650,7 @@ class SQLiteBackend(StorageBackend):
                 """,
                 (self._sanitize_fts5_query(query), limit),
             )
-            return [(str(r["id"]), float(idx)) for idx, r in enumerate(rows)]
+            return [(str(r["id"]), float(r["rank"])) for r in rows]
         except (sqlite3.Error, ValueError) as exc:
             log.warning("FTS5 observation search failed: %s", exc)
             return []

@@ -1,4 +1,4 @@
-"""FastMCP server — registers all 23 Graph Memory MCP tools.
+"""FastMCP server — registers all 24 Graph Memory MCP tools.
 
 This is the core entry point.  A lifespan context manager initialises
 shared state (storage backend, engines, search) once at startup and
@@ -659,14 +659,6 @@ async def delete_observations(
 
         deleted = await state.graph.delete_observations(entity_name, observation_ids)
 
-        # Clean up observation embeddings
-        if state.embeddings.available:
-            for obs_id in observation_ids:
-                try:
-                    await state.embeddings.delete_observation_embedding(obs_id)
-                except GraphMemError:
-                    log.debug("Failed to clean embedding for obs %s", obs_id)
-
         return {
             "entity_name": entity_name,
             "deleted": deleted,
@@ -713,7 +705,7 @@ async def update_observation(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# WRITE TOOLS (10)  |  READ TOOLS (8)  |  UTILITY (1)  |  MULTI-GRAPH (4) — 23 total
+# WRITE TOOLS (10)  |  READ TOOLS (9)  |  UTILITY (1)  |  MULTI-GRAPH (4) — 24 total
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -1000,9 +992,88 @@ async def list_entities(
         return _error_response(exc, tool_name="list_entities")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Multi-graph management
-# ═══════════════════════════════════════════════════════════════════════════
+@mcp.tool()
+async def list_relationships(
+    entity_name: str | None = None,
+    relationship_type: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List relationships in the knowledge graph with optional filtering.
+
+    Browse relationships with pagination. Filter by entity name or
+    relationship type. Returns source/target names and metadata.
+
+    Args:
+        entity_name: Optional — show only relationships involving this entity.
+        relationship_type: Optional — filter to this relationship type.
+        limit: Maximum relationships to return (default 100, max 500).
+        offset: Skip this many relationships for pagination (default 0).
+    """
+    try:
+        state = _require_state()
+        limit = min(max(1, limit), 500)
+        offset = max(0, offset)
+
+        if entity_name:
+            # Scoped to a specific entity
+            rels = await state.graph.get_relationships(
+                entity_name,
+                relationship_type=relationship_type,
+            )
+            total = len(rels)
+            rels = rels[offset : offset + limit]
+        else:
+            # Global listing via raw SQL
+            params: list[object] = []
+            where_clause = ""
+            if relationship_type:
+                where_clause = "WHERE r.relationship_type = ?"
+                params.append(relationship_type.strip().lower())
+
+            count_row = await state.storage.fetch_one(
+                f"SELECT COUNT(*) AS cnt FROM relationships r {where_clause}",
+                tuple(params),
+            )
+            total = int(count_row["cnt"]) if count_row else 0
+
+            rows = await state.storage.fetch_all(
+                f"""
+                SELECT r.*,
+                       s.name AS source_name, s.entity_type AS source_type,
+                       t.name AS target_name, t.entity_type AS target_type
+                FROM relationships r
+                JOIN entities s ON s.id = r.source_id
+                JOIN entities t ON t.id = r.target_id
+                {where_clause}
+                ORDER BY r.updated_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (*tuple(params), limit, offset),
+            )
+            rels = [
+                {
+                    "id": str(r["id"]),
+                    "source_name": str(r["source_name"]),
+                    "source_type": str(r["source_type"]),
+                    "target_name": str(r["target_name"]),
+                    "target_type": str(r["target_type"]),
+                    "relationship_type": str(r["relationship_type"]),
+                    "weight": float(r["weight"]),
+                }
+                for r in rows
+            ]
+
+        return {
+            "results": rels,
+            "count": len(rels),
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    except GraphMemError as exc:
+        return _error_response(exc, tool_name="list_relationships")
 
 
 def _get_graphmem_dir() -> Path:

@@ -306,6 +306,19 @@ class HybridSearch:
         all_entity_ids = [eid for eid, _ in scored[: limit * 3] if eid in row_by_id]
         all_rels = await self._storage.get_relationships_for_entities(all_entity_ids)
 
+        # ── Batch-fetch observations if requested (eliminates N+1) ────────
+        all_obs_by_entity: dict[str, list[dict[str, object]]] = {}
+        if include_observations and all_entity_ids:
+            obs_placeholders = ",".join("?" for _ in all_entity_ids)
+            obs_rows = await self._storage.fetch_all(
+                f"SELECT * FROM observations WHERE entity_id IN ({obs_placeholders}) "
+                "ORDER BY created_at DESC",
+                tuple(all_entity_ids),
+            )
+            for r in obs_rows:
+                eid = str(r["entity_id"])
+                all_obs_by_entity.setdefault(eid, []).append(Observation.from_row(r).to_dict())
+
         # ── Assemble results in score order ──────────────────────────
         results: list[SearchResult] = []
         for entity_id, score in scored:
@@ -318,10 +331,9 @@ class HybridSearch:
                 relevance_score=round(score, 6),
             )
 
-            # Optionally attach observations
+            # Attach observations from batch
             if include_observations:
-                obs_rows = await self._storage.get_observations_for_entity(entity_id)
-                entry["observations"] = [Observation.from_row(r).to_dict() for r in obs_rows]
+                entry["observations"] = all_obs_by_entity.get(entity_id, [])
 
             # Attach direct relationships (always useful context)
             rel_rows = all_rels.get(entity_id, [])
