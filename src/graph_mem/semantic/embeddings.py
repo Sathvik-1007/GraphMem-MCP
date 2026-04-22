@@ -246,8 +246,12 @@ class EmbeddingEngine:
             if stored_dim_str:
                 self._stored_dimension = int(stored_dim_str)
                 self._dimension = self._stored_dimension
-                # We know the dimension — create vec tables now
-                await storage.ensure_vec_tables(self._stored_dimension)
+
+            # Ensure vec tables exist — use stored dimension from this DB,
+            # or the dimension already known from a prior graph/model load.
+            dim = self._stored_dimension or self._dimension
+            if dim is not None:
+                await storage.ensure_vec_tables(dim)
 
             # Mark as available optimistically — model will load lazily.
             # If model load fails later, _ensure_model_loaded() sets
