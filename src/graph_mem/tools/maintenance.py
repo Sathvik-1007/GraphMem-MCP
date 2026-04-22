@@ -1,8 +1,9 @@
-"""Maintenance tools — graph_health, compact_observations, suggest_connections."""
+"""Maintenance tools — graph_health, compact_observations, suggest_connections, audit_graph."""
 
 from __future__ import annotations
 
 import contextlib
+import json as _json
 from typing import Any
 
 from graph_mem.models import Observation
@@ -331,8 +332,6 @@ async def audit_graph() -> str:
         no_obs = [e for e in all_entities if str(e["id"]) not in obs_counts]
 
         # ── Empty properties ─────────────────────────────────────────────
-        import json as _json
-
         no_props = []
         for e in all_entities:
             props_raw = e.get("properties", "{}")
@@ -340,7 +339,7 @@ async def audit_graph() -> str:
                 props = _json.loads(props_raw) if isinstance(props_raw, str) else props_raw
             except (ValueError, TypeError):
                 props = {}
-            if not props or props == {}:
+            if not props:
                 no_props.append(e)
 
         # ── Relationship counts per entity ───────────────────────────────
@@ -356,7 +355,10 @@ async def audit_graph() -> str:
         )
 
         # ── Relationship counts ──────────────────────────────────────────
-        total_rels = len(rel_rows)
+        rel_count_row = await storage.fetch_one(
+            "SELECT COUNT(*) AS cnt FROM relationships",
+        )
+        total_rels = int(rel_count_row["cnt"]) if rel_count_row else 0
         total_obs = sum(obs_counts.values())
 
         # ── Build plain-text report ──────────────────────────────────────

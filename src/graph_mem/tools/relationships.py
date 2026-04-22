@@ -24,12 +24,14 @@ async def add_relationships(relationships: list[dict[str, Any]]) -> dict[str, An
 
         # Cache resolved entities — each unique name resolved only once.
         # For 100 rels referencing 20 unique names, this is 20 lookups not 200.
+        # Keys are stripped to match resolve_entity's name.strip() behavior.
         resolved_cache: dict[str, Any] = {}
 
         async def _cached_resolve(name: str) -> Any:
-            if name not in resolved_cache:
-                resolved_cache[name] = await state.graph.resolve_entity(name)
-            return resolved_cache[name]
+            key = name.strip()
+            if key not in resolved_cache:
+                resolved_cache[key] = await state.graph.resolve_entity(name)
+            return resolved_cache[key]
 
         rel_objs: list[Relationship] = []
         for raw in relationships:
