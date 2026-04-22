@@ -41,6 +41,8 @@ full = ["sentence-transformers>=2.0", "onnxruntime>=1.15", "aiohttp>=3.9", "nump
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",
+    "pytest-aiohttp>=1.0",
+    "pytest-cov>=4.0",
     "ruff>=0.4",
     "mypy>=1.10",
     "coverage>=7.0",
