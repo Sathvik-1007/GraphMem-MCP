@@ -52,19 +52,24 @@ async def add_entities(entities: list[dict[str, Any]]) -> dict[str, Any]:
             if observations:
                 obs_by_index.append((idx, observations))
 
-        # Persist entities
+        # Persist entities (single transaction inside engine)
         results = await state.graph.add_entities(entity_objs)
 
-        # Compute entity embeddings
+        # Compute entity embeddings — single batch embed call
         entity_ids = [str(r["id"]) for r in results]
         await _embed_entities(entity_ids)
 
-        # Add and embed observations — keyed by index to avoid name collision
+        # Batch all observations: collect, insert per-entity, then embed ALL at once
+        all_obs_results: list[dict[str, Any]] = []
         for idx, obs_texts in obs_by_index:
             entity_name = str(results[idx]["name"])
             obs_objs = [Observation.pending(text) for text in obs_texts]
             obs_results = await state.graph.add_observations(entity_name, obs_objs)
-            await _embed_observations(obs_results)
+            all_obs_results.extend(obs_results)
+
+        # Single batch embed for ALL observations across all entities
+        if all_obs_results:
+            await _embed_observations(all_obs_results)
 
         return {"results": results, "count": len(results)}
 

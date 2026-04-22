@@ -218,6 +218,8 @@ any structured knowledge across sessions.
   and add merged summaries in one step.
 - **suggest_connections** — Find semantically related entities to connect to.
   Essential for large graphs where you can't read everything.
+- **audit_graph** — Full quality screening: disconnected nodes, missing
+  descriptions/observations/properties, weak links. Returns plain text report.
 
 ### Multi-Graph Tools
 - **list_graphs** — Show all graphs in .graphmem/.

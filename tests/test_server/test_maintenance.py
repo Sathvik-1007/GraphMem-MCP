@@ -20,6 +20,7 @@ from graph_mem.server import (
     add_entities,
     add_observations,
     add_relationships,
+    audit_graph,
     compact_observations,
     get_entity,
     graph_health,
@@ -369,3 +370,163 @@ class TestSuggestConnections:
         result = await suggest_connections("Node0", limit=3)
         assert "error" not in result
         assert len(result["suggestions"]) <= 3
+
+
+# ---------------------------------------------------------------------------
+# audit_graph tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_audit_graph_empty(setup_server):
+    """Audit on empty graph returns the empty message."""
+    result = await audit_graph()
+    assert isinstance(result, str)
+    assert "empty" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_audit_graph_finds_disconnected(setup_server):
+    """Entities with no relationships flagged as disconnected."""
+    await add_entities(
+        [
+            {"name": "Lonely", "entity_type": "person"},
+            {"name": "Also Lonely", "entity_type": "place"},
+        ]
+    )
+    result = await audit_graph()
+    assert isinstance(result, str)
+    assert "DISCONNECTED" in result
+    assert "Lonely" in result
+    assert "Also Lonely" in result
+    assert "2/2" in result  # both disconnected
+
+
+@pytest.mark.asyncio
+async def test_audit_graph_finds_missing_descriptions(setup_server):
+    """Entities with empty descriptions flagged."""
+    await add_entities(
+        [
+            {"name": "NoDesc", "entity_type": "person"},
+            {"name": "HasDesc", "entity_type": "person", "description": "A person"},
+        ]
+    )
+    result = await audit_graph()
+    assert "MISSING DESCRIPTIONS" in result
+    assert "NoDesc" in result
+
+
+@pytest.mark.asyncio
+async def test_audit_graph_finds_missing_observations(setup_server):
+    """Entities with no observations flagged."""
+    await add_entities(
+        [
+            {"name": "NoObs", "entity_type": "concept"},
+            {"name": "HasObs", "entity_type": "concept", "observations": ["A fact"]},
+        ]
+    )
+    result = await audit_graph()
+    assert "MISSING OBSERVATIONS" in result
+    assert "NoObs" in result
+
+
+@pytest.mark.asyncio
+async def test_audit_graph_connected_entities_not_disconnected(setup_server):
+    """Connected entities do NOT appear in disconnected list."""
+    await add_entities(
+        [
+            {"name": "Alice", "entity_type": "person"},
+            {"name": "Bob", "entity_type": "person"},
+        ]
+    )
+    await add_relationships(
+        [
+            {"source": "Alice", "target": "Bob", "relationship_type": "knows"},
+        ]
+    )
+    result = await audit_graph()
+    assert "DISCONNECTED ENTITIES (0/" in result
+
+
+@pytest.mark.asyncio
+async def test_audit_graph_quality_score(setup_server):
+    """Quality score present and is a percentage."""
+    await add_entities(
+        [
+            {
+                "name": "Full",
+                "entity_type": "person",
+                "description": "Desc",
+                "properties": {"key": "val"},
+                "observations": ["obs1"],
+            },
+        ]
+    )
+    result = await audit_graph()
+    assert "Quality Score:" in result
+    assert "%" in result
+
+
+@pytest.mark.asyncio
+async def test_audit_graph_returns_string_not_dict(setup_server):
+    """Audit must return plain text, never a dict."""
+    await add_entities([{"name": "X", "entity_type": "t"}])
+    result = await audit_graph()
+    assert isinstance(result, str)
+    assert not isinstance(result, dict)
+
+
+# ---------------------------------------------------------------------------
+# add_entities batch observation optimization tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_entities_batch_observations(setup_server):
+    """Multiple entities with observations — all observations stored correctly."""
+    result = await add_entities(
+        [
+            {"name": "E1", "entity_type": "t", "observations": ["obs1a", "obs1b"]},
+            {"name": "E2", "entity_type": "t", "observations": ["obs2a"]},
+            {"name": "E3", "entity_type": "t"},  # no observations
+        ]
+    )
+    assert result["count"] == 3
+
+    e1 = await get_entity("E1")
+    assert len(e1["observations"]) == 2
+
+    e2 = await get_entity("E2")
+    assert len(e2["observations"]) == 1
+
+    e3 = await get_entity("E3")
+    assert len(e3["observations"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# add_relationships cached resolution tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_relationships_cached_resolution(setup_server):
+    """Same entity name referenced multiple times — still works (cache hit)."""
+    await add_entities(
+        [
+            {"name": "Hub", "entity_type": "person"},
+            {"name": "Spoke1", "entity_type": "person"},
+            {"name": "Spoke2", "entity_type": "person"},
+            {"name": "Spoke3", "entity_type": "person"},
+        ]
+    )
+    # Hub referenced 3x as source — should resolve from cache after first
+    result = await add_relationships(
+        [
+            {"source": "Hub", "target": "Spoke1", "relationship_type": "knows"},
+            {"source": "Hub", "target": "Spoke2", "relationship_type": "knows"},
+            {"source": "Hub", "target": "Spoke3", "relationship_type": "knows"},
+        ]
+    )
+    assert result["count"] == 3
+    for r in result["results"]:
+        assert r["source"] == "Hub"

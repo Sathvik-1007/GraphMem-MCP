@@ -22,6 +22,15 @@ async def add_relationships(relationships: list[dict[str, Any]]) -> dict[str, An
     try:
         state = _require_state()
 
+        # Cache resolved entities — each unique name resolved only once.
+        # For 100 rels referencing 20 unique names, this is 20 lookups not 200.
+        resolved_cache: dict[str, Any] = {}
+
+        async def _cached_resolve(name: str) -> Any:
+            if name not in resolved_cache:
+                resolved_cache[name] = await state.graph.resolve_entity(name)
+            return resolved_cache[name]
+
         rel_objs: list[Relationship] = []
         for raw in relationships:
             source_name: str = raw["source"]
@@ -30,8 +39,8 @@ async def add_relationships(relationships: list[dict[str, Any]]) -> dict[str, An
             weight: float = float(raw.get("weight", 1.0))
             properties: dict[str, object] = raw.get("properties", {})
 
-            source_entity = await state.graph.resolve_entity(source_name)
-            target_entity = await state.graph.resolve_entity(target_name)
+            source_entity = await _cached_resolve(source_name)
+            target_entity = await _cached_resolve(target_name)
 
             rel = Relationship(
                 source_id=source_entity.id,

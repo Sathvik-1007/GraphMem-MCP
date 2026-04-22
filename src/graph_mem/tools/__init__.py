@@ -46,6 +46,7 @@ from .graph_mgmt import (
     switch_graph,
 )
 from .maintenance import (
+    audit_graph,
     compact_observations,
     graph_health,
     suggest_connections,
@@ -76,6 +77,7 @@ __all__ = [
     "add_entities",
     "add_observations",
     "add_relationships",
+    "audit_graph",
     "compact_observations",
     "create_graph",
     "delete_entities",

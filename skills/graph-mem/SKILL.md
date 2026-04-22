@@ -80,6 +80,7 @@ Relationships give you structure to traverse. All three matter.
 | `graph_health` | Session start or periodic check — shows hotspots, missing descriptions, action items |
 | `compact_observations` | Entity has too many observations (>15) — merge old ones into fewer, denser summaries |
 | `suggest_connections` | Just added an entity and need to know what to connect it to in a large graph |
+| `audit_graph` | Full quality screening — finds disconnected nodes, missing data, weak links. Plain text report |
 
 ### Relationships
 
@@ -115,7 +116,7 @@ get_entity("Name")        → load full context for key entities
 **During a session** — extract when new knowledge surfaces (see `workflows.md`).
 
 **Ending a session** — sweep for anything unstored, update stale descriptions,
-run `graph_health` to verify.
+run `audit_graph` to screen for quality gaps, then `graph_health` to verify.
 
 ## Adding Entities in Large Graphs
 
