@@ -60,6 +60,7 @@ packages = ["src/graph_mem"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/graph_mem/ui/frontend" = "graph_mem/ui/frontend"
+"skills/graph-mem" = "graph_mem/_bundled_skills/graph-mem"
 
 [tool.ruff]
 target-version = "py310"

@@ -811,9 +811,11 @@ async def _handle_spa_fallback(request: web.Request) -> web.StreamResponse:
     frontend_dir: Path | None = request.app.get(frontend_dir_key)
     if frontend_dir is None:
         return _no_frontend_response()
-    # Serve actual files if they exist, otherwise fall back to index.html
-    requested = frontend_dir / request.match_info["path"]
-    if requested.is_file():
+    # Serve actual files if they exist, otherwise fall back to index.html.
+    # SECURITY: resolve() + startswith() prevents path traversal (../../etc/passwd).
+    requested = (frontend_dir / request.match_info["path"]).resolve()
+    frontend_resolved = frontend_dir.resolve()
+    if requested.is_file() and str(requested).startswith(str(frontend_resolved)):
         return web.FileResponse(requested)
     return web.FileResponse(frontend_dir / "index.html")
 
@@ -837,6 +839,10 @@ def _no_frontend_response() -> web.Response:
             "</body></html>"
         ),
         content_type="text/html",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'self'",
+        },
     )
 
 

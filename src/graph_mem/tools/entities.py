@@ -71,7 +71,30 @@ async def add_entities(entities: list[dict[str, Any]]) -> dict[str, Any]:
         if all_obs_results:
             await _embed_observations(all_obs_results)
 
-        return {"results": results, "count": len(results)}
+        # Auto-screening: lightweight quality check on newly added entities.
+        # Returns hints so the LLM can improve quality without extra tool calls.
+        screening: dict[str, list[str]] = {}
+        no_description: list[str] = []
+        no_observations: list[str] = []
+        for idx, raw in enumerate(entities):
+            ename = str(results[idx]["name"])
+            if not raw.get("description", "").strip():
+                no_description.append(ename)
+            if not raw.get("observations"):
+                no_observations.append(ename)
+        if no_description:
+            screening["missing_description"] = no_description
+        if no_observations:
+            screening["missing_observations"] = no_observations
+
+        response: dict[str, Any] = {"results": results, "count": len(results)}
+        if screening:
+            screening["hint"] = [
+                "Add descriptions and observations to improve search quality. "
+                "Use update_entity for descriptions, add_observations for facts."
+            ]
+            response["screening"] = screening
+        return response
 
     except GraphMemError as exc:
         return _error_response(exc, tool_name="add_entities")
@@ -124,19 +147,26 @@ async def delete_entities(names: list[str]) -> dict[str, Any]:
     try:
         state = _require_state()
 
-        # Resolve entity IDs before deletion for embedding cleanup
+        # Resolve entity IDs AND observation IDs before deletion for embedding cleanup.
+        # Vec tables don't support CASCADE, so observation embeddings must be
+        # cleaned up manually when the parent entity is deleted.
         entity_ids: list[str] = []
+        obs_ids_to_clean: list[str] = []
         for name in names:
             try:
                 entity = await state.graph.resolve_entity(name)
                 entity_ids.append(entity.id)
+                # Collect observation IDs — their rows will be cascade-deleted
+                # from the main table, but vec table rows won't.
+                obs_rows = await state.storage.get_observations_for_entity(entity.id)
+                obs_ids_to_clean.extend(str(o["id"]) for o in obs_rows)
             except EntityNotFoundError:
                 log.debug("Entity %r not found during deletion, skipping", name)
                 continue
 
         deleted = await state.graph.delete_entities(names)
 
-        # Clean up embeddings for deleted entities
+        # Clean up embeddings for deleted entities AND their observations
         if state.embeddings.available:
             for eid in entity_ids:
                 try:
@@ -148,6 +178,11 @@ async def delete_entities(names: list[str]) -> dict[str, Any]:
                         eid,
                         emb_exc,
                     )
+            for oid in obs_ids_to_clean:
+                try:
+                    await state.embeddings.delete_observation_embedding(oid)
+                except GraphMemError:
+                    log.debug("Failed to clean up observation embedding %s", oid)
 
         return {"results": names, "deleted": deleted, "count": deleted}
 

@@ -14,14 +14,13 @@ from __future__ import annotations
 
 import contextlib
 import json
-import sqlite3
 import time
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from graph_mem.models.entity import Entity
 from graph_mem.models.observation import Observation
 from graph_mem.models.relationship import Relationship
-from graph_mem.utils.errors import DatabaseError, EntityNotFoundError
+from graph_mem.utils.errors import EntityNotFoundError
 from graph_mem.utils.ids import generate_id
 from graph_mem.utils.logging import get_logger
 
@@ -449,8 +448,8 @@ class GraphEngine:
                     )
                     continue
                 if await self._storage.delete_observation(obs_id):
-                    # Clean up embedding — vec table may not exist
-                    with contextlib.suppress(sqlite3.OperationalError, DatabaseError):
+                    # Clean up embedding — vec table may not exist on all backends
+                    with contextlib.suppress(Exception):
                         await self._storage.delete_observation_embedding(obs_id)
                     deleted += 1
 
@@ -537,7 +536,13 @@ class GraphEngine:
         if new_type is not None:
             updates["relationship_type"] = new_type.strip().lower()
         if properties is not None:
-            old_props = json.loads(str(existing.get("properties", "{}")))
+            old_props_raw = existing.get("properties", "{}")
+            if isinstance(old_props_raw, dict):
+                old_props = old_props_raw
+            elif isinstance(old_props_raw, str):
+                old_props = json.loads(old_props_raw)
+            else:
+                old_props = {}
             merged = {**old_props, **properties}
             updates["properties"] = json.dumps(merged, ensure_ascii=False, default=str)
 

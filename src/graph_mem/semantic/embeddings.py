@@ -28,6 +28,7 @@ server helpers are fire-and-forget, the engine is strict, and search is resilien
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import sqlite3
 import struct
@@ -280,8 +281,9 @@ class EmbeddingEngine:
         if not self._available:
             raise EmbeddingError("Embedding engine not available.")
 
-        # Lazy-load model on first embed() call
-        self._ensure_model_loaded()
+        # Lazy-load model on first embed() call.
+        # Run in thread to avoid blocking the async event loop if prewarm failed.
+        await asyncio.to_thread(self._ensure_model_loaded)
 
         storage = self._resolve_storage(storage)
 

@@ -156,13 +156,16 @@ async def start_server(
     await runner.setup()
 
     if port == 0:
-        # Let the OS assign an available port
+        # Use SockSite to avoid TOCTOU race — bind once, pass socket directly
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, 0))
         port = sock.getsockname()[1]
-        sock.close()
+        sock.listen(128)
+        site = web.SockSite(runner, sock)
+    else:
+        site = web.TCPSite(runner, host, port)
 
-    site = web.TCPSite(runner, host, port)
     await site.start()
 
     url = f"http://{host}:{port}"

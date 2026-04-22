@@ -213,7 +213,7 @@ Graph-Mem exposes **28 MCP tools** — ten for writing, nine for reading, four f
 
 | Tool | Description |
 |------|-------------|
-| `add_entities` | Batch-create entities with optional observations; auto-merges on name conflict |
+| `add_entities` | Batch-create entities with optional observations; auto-merges on name conflict; returns quality screening hints |
 | `add_relationships` | Create typed, directed edges between entities; merges duplicates by max weight |
 | `add_observations` | Attach factual statements to entities with optional source provenance |
 | `update_entity` | Modify entity name, description, properties, or type in-place (rename with collision check) |
@@ -465,9 +465,12 @@ All settings are optional. Defaults work out of the box. Every setting can be co
 - **ONNX-optimized embeddings** — ~3x faster inference than default PyTorch, with automatic fallback
 - **Content-hash embedding cache** — identical text is never embedded twice
 - **Background model pre-warming** — embedding model loads in a background thread during startup
-- **Thread-safe lazy loading** — double-check locking for safe concurrent access
+- **Non-blocking lazy loading** — model loads via `asyncio.to_thread` so embed calls never block the event loop
+- **Thread-safe double-check locking** — safe concurrent access to the embedding engine
 - **Memory-mapped I/O** — large databases stay fast without consuming proportional RAM
 - **Batch transactions** — bulk operations execute in a single transaction
+- **Resilient transaction nesting** — savepoint-based nesting with automatic depth recovery on failures
+- **Auto-screening** — `add_entities` returns quality hints (missing descriptions/observations) so agents can self-improve
 
 ---
 

@@ -7,6 +7,7 @@ workloads: WAL journal, large page cache, memory-mapped I/O.
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
@@ -146,16 +147,28 @@ class Database:
         try:
             yield
             self._txn_depth -= 1
-            if self._txn_depth == 0:
-                await self.conn.execute("COMMIT")
-            else:
-                await self.conn.execute(f"RELEASE sp_{depth}")
+            try:
+                if self._txn_depth == 0:
+                    await self.conn.execute("COMMIT")
+                else:
+                    await self.conn.execute(f"RELEASE sp_{depth}")
+            except Exception:
+                # Finalization SQL failed (DB locked, I/O error, etc).
+                # Reset depth to known state so next transaction() works.
+                self._txn_depth = 0
+                with contextlib.suppress(Exception):
+                    await self.conn.execute("ROLLBACK")
+                raise
         except Exception:
             self._txn_depth -= 1
-            if self._txn_depth == 0:
-                await self.conn.execute("ROLLBACK")
-            else:
-                await self.conn.execute(f"ROLLBACK TO sp_{depth}")
+            try:
+                if self._txn_depth == 0:
+                    await self.conn.execute("ROLLBACK")
+                else:
+                    await self.conn.execute(f"ROLLBACK TO sp_{depth}")
+            except Exception:
+                # Rollback itself failed — reset to known state
+                self._txn_depth = 0
             raise
 
     async def __aenter__(self) -> Database:

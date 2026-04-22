@@ -148,6 +148,8 @@ class SQLiteBackend(StorageBackend):
         self, entity_type: str | None = None, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
         db = self._require_db()
+        limit = max(1, limit)
+        offset = max(0, offset)
         if entity_type is not None:
             return await db.fetch_all(
                 "SELECT * FROM entities WHERE entity_type = ? "
@@ -660,11 +662,12 @@ class SQLiteBackend(StorageBackend):
         except (sqlite3.Error, ValueError, OSError) as exc:
             log.debug("FTS5 suggestion query failed for %r: %s", name, exc)
 
-        # Fallback to LIKE
+        # Fallback to LIKE (escape wildcards to prevent semantic injection)
         if not suggestions:
+            escaped = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             rows = await db.fetch_all(
-                "SELECT name FROM entities WHERE name LIKE ? LIMIT ?",
-                (f"%{name}%", limit),
+                "SELECT name FROM entities WHERE name LIKE ? ESCAPE '\\' LIMIT ?",
+                (f"%{escaped}%", limit),
             )
             suggestions = [str(r["name"]) for r in rows]
 
