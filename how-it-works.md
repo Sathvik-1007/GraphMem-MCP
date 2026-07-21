@@ -182,7 +182,11 @@ That matters for `min_score`. Normalising to 0-1 would force the top hit to scor
 
 Observations contribute to their parent entity's score, capped at the value of one perfect observation match. Without the cap, ten mediocre observations outrank one exact hit.
 
-Filters (`entity_types`, `entity_id`) are applied **before** the candidate list is truncated to `limit`. Filtering after truncation is why a scoped search used to return nothing whenever the matching entity was not also globally top-ranked — which is precisely when scoping is worth using.
+Filters are applied when candidates are **fetched**, not afterwards. `entity_types` becomes a `WHERE` clause on the full-text query, and `entity_id` becomes one on the observation query.
+
+This matters more than it sounds. Filtering a fixed-size candidate pool after the fact does not work: with 200 matching notes ranked above 3 matching people, a search for people looks at the top-N rows overall, finds no people among them, and returns nothing. Moving the filter into the query means the pool is drawn from matching entities to begin with.
+
+The vector channel cannot do this — sqlite-vec performs a KNN scan with no `WHERE` clause — so when a filter is active it is given a proportionally wider pool instead.
 
 ---
 

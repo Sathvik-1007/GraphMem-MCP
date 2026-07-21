@@ -96,12 +96,34 @@ comparable across queries.
 **Cost:** the numbers look small and unfamiliar. Documented in the docstrings
 and in how-it-works.md rather than hidden behind a cosmetic rescale.
 
-### Filters run before truncation
+### Filters are applied during retrieval, not after it
 
-Applying `entity_types` or `entity_id` *after* cutting the candidate list to
-`limit` means a scoped search returns nothing whenever the match is not also
-globally top-ranked — precisely the case scoping exists for. Filters therefore
-run first, and the `entity_id` scope is pushed into SQL.
+**Decision:** `entity_types` and `entity_id` become `WHERE` clauses on the
+retrieval query.
+
+**Why:** filtering a fixed-size candidate pool afterwards is not a filter, it
+is a coincidence. Measured: 200 matching entities of one type and 3 of another,
+`limit=3` filtered to the rare type returned **0 results** — the 3 never
+entered the pool. Widening the pool only moves the threshold; it does not fix
+the shape of the bug.
+
+**Cost:** the retrieval query is slightly more complex, and the vector channel
+cannot participate — sqlite-vec runs a KNN scan that admits no `WHERE` clause.
+That channel is instead given a wider pool when a filter is active
+(`FILTERED_CANDIDATE_MULTIPLIER`), which is a mitigation rather than a fix, and
+is documented as such at the constant.
+
+### Wrapped exceptions must be caught by their wrapped type
+
+`Database.fetch_all` wraps SQLite failures in `DatabaseError`, which is **not**
+a subclass of `sqlite3.Error`. Four graceful-degradation handlers listed only
+`sqlite3.Error` and were therefore unreachable — search did not degrade when
+its full-text index was damaged, and `EmbeddingEngine.initialize` raised
+despite documenting that it never does.
+
+The rule this leaves behind: a handler for a layer that wraps its errors must
+name the wrapper type. Grep for `except (sqlite3.Error` when touching storage —
+if the call goes through `Database`, `DatabaseError` belongs in the tuple.
 
 ### There is one storage backend, and it is the interface
 

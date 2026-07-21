@@ -65,9 +65,19 @@ unusable under load. Every one was reproduced before and after the fix.
   correctly and then max-normalised, forcing the top hit to exactly 1.0 however
   poor it was and making `min_score` a threshold against the best result rather
   than against relevance.
-- **Filters are applied before truncation.** `entity_types` and `entity_id`
-  were applied after cutting the candidate list, so a scoped search returned
-  nothing whenever the match was not also globally top-ranked.
+- **Scoped search returns what it was asked for.** `entity_types` and
+  `entity_id` were applied *after* a fixed-size candidate pool had been drawn,
+  so entities of the requested type never entered the pool when enough entities
+  of other types outranked them. Measured: 200 matching notes plus 3 matching
+  people, `limit=3` filtered to people, returned 0 results. Both filters are now
+  `WHERE` clauses on the retrieval query itself.
+- **Search degrades instead of failing when its index is damaged.** Four
+  handlers listed only `sqlite3.Error`, but every query runs through
+  `Database.fetch_all`, which wraps failures in `DatabaseError` — not a
+  subclass. The handlers were unreachable, so a damaged full-text index
+  propagated out of search, and `EmbeddingEngine.initialize` raised despite
+  documenting that it never does, taking down start-up rather than disabling
+  semantic search.
 - Model inference runs off the event loop. Only the model *load* was wrapped in
   `to_thread`; the 50–500 ms inference was not.
 - The embedding cache primary key is `(content_hash, model_name)`. It was
