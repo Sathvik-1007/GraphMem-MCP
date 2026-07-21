@@ -207,10 +207,18 @@ Both publishers use OIDC, so **no API token is ever stored in this repository**.
    | Repository name | `GraphMem-MCP` |
    | Workflow name | `release.yml` |
    | Environment name | `pypi` |
-2. **GitHub environment** — create an environment named `pypi` in the repository
-   settings. Add required reviewers if you want a human gate before upload.
+2. **GitHub environment** — nothing to do. `release.yml` declares
+   `environment: pypi`, and GitHub creates an environment the first time a
+   workflow references one. Pre-creating it in Settings → Environments is only
+   worth doing if you want a protection rule, such as requiring your own
+   approval before the upload runs.
 3. **MCP Registry** — nothing to configure. The namespace
-   `io.github.Sathvik-1007/*` is proven by the workflow's own GitHub identity.
+   `io.github.Sathvik-1007/*` is proven by the workflow's own GitHub identity,
+   so there is no account to make and no token to store.
+
+Only step 1 requires action. The one thing that must line up across the two
+sites is the environment name: PyPI's "Environment name" field and the
+`environment:` block in `release.yml` must both say `pypi`.
 
 ### Cutting a release
 
