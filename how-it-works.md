@@ -247,43 +247,78 @@ flowchart TD
 3. **FTS5 match** -- full-text search for partial or fuzzy names.
 4. **Suggestions** -- if nothing matches, return the closest candidates so the agent can self-correct.
 
+### When one name matches several entities
+
+A name can belong to more than one entity of different types — "Mercury" the
+planet and "Mercury" the project. Resolution has to pick one, and it picks the
+most recently updated, deterministically.
+
+Determinism is the point. Without an explicit ordering, which row SQLite
+returned depended on the query plan, so the same name could resolve to a
+different entity from one call to the next. `resolve_entity` is what
+`add_observations`, `update_entity`, and `delete_entities` all resolve through,
+so a shifting answer means an observation landing on the wrong entity with
+nothing to indicate it happened.
+
+An ambiguous resolution is logged with the match count and the entity chosen.
+Pass `entity_type` to resolve exactly rather than relying on the tiebreak.
+
 ---
 
-## Storage Backend Architecture
+## Storage Architecture
 
 ```mermaid
 graph TB
-    subgraph ABC["StorageBackend ABC (50+ abstract methods)"]
-        direction LR
-        Life["Lifecycle<br/>initialize · close · transaction"]
-        EntOps["Entity Ops<br/>upsert · get · list · update · delete · count"]
-        RelOps["Relationship Ops<br/>upsert · get · update · delete · count"]
-        ObsOps["Observation Ops<br/>insert · get · update · delete · move · count"]
-        EmbOps["Embedding Ops<br/>upsert · delete · vector_search · cache"]
-        FTSOps["FTS Ops<br/>search_entities · search_observations · suggest"]
-        Meta["Metadata + Traversal<br/>get/set metadata · fetch_all · fetch_one"]
+    subgraph Callers["Callers"]
+        GE["GraphEngine<br/>CRUD + entity resolution"]
+        GT["GraphTraversal<br/>BFS + paths + subgraph"]
+        HS["HybridSearch<br/>vector + FTS5 + RRF"]
+        EM["EntityMerger"]
     end
 
-    subgraph SQLite["SQLiteBackend (reference implementation)"]
-        WAL["WAL mode<br/>concurrent reads"]
+    subgraph Backend["SQLiteBackend"]
+        Ent["Entity ops<br/>upsert · get · list · update · delete"]
+        Rel["Relationship ops<br/>upsert · adjacency · update · delete"]
+        Obs["Observation ops<br/>insert · get · move · update · delete"]
+        Emb["Embedding ops<br/>upsert · vector_search · cache"]
+        Fts["FTS ops<br/>entities · observations · suggest"]
+    end
+
+    subgraph Conn["Database"]
+        WAL["WAL journal<br/>concurrent reads"]
+        Lock["One write lock<br/>BEGIN IMMEDIATE + savepoints"]
         VEC2["sqlite-vec<br/>ANN vectors"]
-        FTS2["FTS5 + triggers<br/>auto-sync index"]
-        PRAGMA["PRAGMA tuning<br/>journal, cache, mmap"]
+        FTS2["FTS5 + triggers<br/>auto-synced index"]
+        PRAGMA["PRAGMA tuning<br/>cache · mmap · busy_timeout"]
     end
 
-    subgraph Future["Future Backends"]
-        Neo4j["Neo4j"]
-        Memgraph["Memgraph"]
-        PG["PostgreSQL"]
-    end
+    Callers --> Backend
+    Backend --> Conn
 
-    ABC --> SQLite
-    ABC -.-> Future
-
-    style ABC fill:#6366f1,stroke:#4f46e5,color:#fff
-    style SQLite fill:#0ea5e9,stroke:#0284c7,color:#fff
-    style Future fill:#94a3b8,stroke:#64748b,color:#fff
+    style Callers fill:#6366f1,stroke:#4f46e5,color:#fff
+    style Backend fill:#0ea5e9,stroke:#0284c7,color:#fff
+    style Conn fill:#10b981,stroke:#059669,color:#fff
 ```
+
+There is one storage backend, and it is the interface. An earlier version of
+this package carried a 476-line abstract base class advertising Neo4j,
+Memgraph, and PostgreSQL support, plus a registry to select between them.
+Neither worked, and neither could:
+
+- `create_backend` resolved a class from the registry and then returned
+  `SQLiteBackend` regardless of what it found.
+- `Config` only ever accepted `"sqlite"`, so no alternative could be selected
+  even if the registry had worked.
+- The base class's own `fetch_all(sql)` and `fetch_one(sql)` methods took raw
+  SQL strings. No graph database can implement those — and fifteen call sites
+  outside the storage package already depended on exactly those two methods.
+
+What the abstraction actually produced was a 190-line stub in the test suite
+whose only purpose was to satisfy the ABC, and which had to be extended every
+time a real method was added to the real backend. It was removed. Adding a
+second backend is still possible; it would start by replacing the raw-SQL
+escape hatches with typed operations, which is the work the base class was
+pretending had already been done.
 
 ---
 
@@ -299,7 +334,7 @@ graph TD
     GraphMod["graph/<br/>engine.py -- CRUD + entity resolution<br/>traversal.py -- BFS + pathfinding + subgraph<br/>merge.py -- entity consolidation"]
     Models["models/<br/>entity.py -- Entity dataclass<br/>relationship.py -- Relationship dataclass<br/>observation.py -- Observation dataclass"]
     SemanticMod["semantic/<br/>embeddings.py -- lazy model + ONNX + cache<br/>search.py -- hybrid vector+FTS5+RRF"]
-    StorageMod["storage/<br/>base.py -- StorageBackend ABC (50+ methods)<br/>sqlite_backend.py -- reference impl<br/>__init__.py -- backend registry"]
+    StorageMod["storage/<br/>sqlite_backend.py -- all SQL<br/>__init__.py -- backend factory"]
     UIMod["ui/<br/>server.py -- aiohttp app factory<br/>routes.py -- REST API endpoints<br/>frontend/ -- pre-built React SPA"]
     Utils["utils/<br/>config.py -- Config dataclass + env vars<br/>errors.py -- 14 error classes<br/>ids.py -- ULID generation<br/>logging.py -- structured logging"]
 
@@ -325,7 +360,7 @@ graph TD
 | `graph/` | GraphEngine CRUD, BFS traversal, path-finding, subgraph extraction, entity merging |
 | `models/` | Dataclasses for Entity, Relationship, Observation |
 | `semantic/` | EmbeddingEngine (lazy loading, ONNX, content-hash cache) + HybridSearch (vector + FTS5 + RRF) |
-| `storage/` | StorageBackend ABC (50+ methods) + SQLiteBackend reference implementation + backend registry |
+| `storage/` | SQLiteBackend — every SQL statement in the project lives here — plus the factory that constructs it |
 | `ui/` | aiohttp web server + REST API routes + pre-built React SPA graph explorer |
 | `utils/` | Config, structured logging, error hierarchy (14 classes), ULID generation |
 

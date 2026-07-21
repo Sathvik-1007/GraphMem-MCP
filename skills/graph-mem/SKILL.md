@@ -80,7 +80,7 @@ Relationships give you structure to traverse. All three matter.
 | `graph_health` | Session start or periodic check — shows hotspots, missing descriptions, action items |
 | `compact_observations` | Entity has too many observations (>15) — merge old ones into fewer, denser summaries |
 | `suggest_connections` | Just added an entity and need to know what to connect it to in a large graph |
-| `audit_graph` | Full quality screening — finds disconnected nodes, missing data, weak links. Plain text report |
+| `audit_graph` | Full quality screening — finds disconnected nodes, missing data, weak links. Returns structured findings plus a rendered `report` field |
 
 ### Relationships
 

@@ -198,7 +198,7 @@ graph-mem server
 
 ```bash
 pip install "graph-mem[embeddings]"   # sentence-transformers for local embeddings
-pip install "graph-mem[onnx]"         # ONNX runtime for ~3x faster inference
+pip install "graph-mem[onnx]"         # ONNX runtime for embedding inference
 pip install "graph-mem[ui]"           # aiohttp for interactive graph visualisation
 pip install "graph-mem[full]"         # all of the above
 ```
@@ -245,7 +245,7 @@ Graph-Mem exposes **28 MCP tools** — ten for writing, nine for reading, four f
 | `graph_health` | Health stats: counts, hotspots, missing descriptions, suggested actions |
 | `compact_observations` | Atomic observation compaction — delete old and add merged summaries in one step |
 | `suggest_connections` | Find semantically similar entities for a node to connect to |
-| `audit_graph` | Full quality screening — disconnected nodes, missing data, weak links (plain text report) |
+| `audit_graph` | Full quality screening — disconnected nodes, missing data, weak links. Returns structured findings plus a rendered `report` field |
 
 ### Visualization (1)
 
@@ -314,7 +314,14 @@ graph TD
 
 Everything lives in a single SQLite database per project. The server communicates over MCP's standard stdio transport (SSE and streamable-http also supported) and stores all data in `.graphmem/graph.db` at your project root. The database file is portable — copy it between machines, check it into version control, or back it up like any other file.
 
-For detailed technical documentation — data model, search pipeline, entity resolution, storage architecture, and request flow diagrams — see **[How It Works](how-it-works.md)**.
+### Further reading
+
+| Document | What is in it |
+|----------|---------------|
+| **[How It Works](how-it-works.md)** | Data model, search pipeline, traversal, entity resolution, storage layout, request flow |
+| **[Architecture](docs/ARCHITECTURE.md)** | Why the design is what it is — the load-bearing decisions, their costs, and the measured baselines |
+| **[Security](SECURITY.md)** | Threat model, the MCP and browser trust boundaries, and what is deliberately out of scope |
+| **[Contributing](CONTRIBUTING.md)** | Local setup and the gates CI enforces |
 
 ---
 
@@ -335,7 +342,17 @@ graph-mem ui --port 9090                  # use a specific port
 graph-mem ui --graph harry-potter         # open a specific named graph
 ```
 
-The `open_dashboard` MCP tool also starts this UI server and returns the URL directly to your agent.
+The URL printed by `graph-mem ui` contains a **session token** — treat it as a
+password. The dashboard reads *and writes* the graph, so the API requires that
+token in a custom header, and rejects requests whose `Origin` or `Host` is not
+the interface it bound. Without those checks any website you visited while the
+UI was running could rewrite your knowledge graph. See
+[SECURITY.md](SECURITY.md) for the details.
+
+The `open_dashboard` MCP tool also starts this UI server and returns the URL to
+your agent. It always binds localhost: the bind address is deliberately not a
+tool parameter, so a prompt-injected agent cannot publish your graph to the
+network.
 
 **Dashboard features:**
 - **Force-directed graph canvas** with real-time physics simulation
@@ -461,16 +478,41 @@ All settings are optional. Defaults work out of the box. Every setting can be co
 
 ## Performance
 
-- **WAL mode + PRAGMA tuning** — concurrent reads with fast writes, optimized journal and cache settings
-- **ONNX-optimized embeddings** — ~3x faster inference than default PyTorch, with automatic fallback
-- **Content-hash embedding cache** — identical text is never embedded twice
-- **Background model pre-warming** — embedding model loads in a background thread during startup
-- **Non-blocking lazy loading** — model loads via `asyncio.to_thread` so embed calls never block the event loop
-- **Thread-safe double-check locking** — safe concurrent access to the embedding engine
-- **Memory-mapped I/O** — large databases stay fast without consuming proportional RAM
-- **Batch transactions** — bulk operations execute in a single transaction
-- **Resilient transaction nesting** — savepoint-based nesting with automatic depth recovery on failures
-- **Auto-screening** — `add_entities` returns quality hints (missing descriptions/observations) so agents can self-improve
+Measured numbers, not adjectives. Reproduce the traversal figures with
+`python benchmarks/bench_traversal.py`; the full table is in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+**Traversal** — breadth-first with a global visited set, one indexed adjacency
+query per hop. A dense 60-node graph traverses to depth 6 in 5 ms. The obvious
+recursive-CTE formulation enumerates every simple path instead: on a 14-node
+graph it materialised 1,409,006 intermediate rows in 6.4 seconds to return the
+same 13 entities that BFS returns in 1 ms.
+
+**Graph canvas** — Barnes-Hut force simulation (θ = 0.9). 2000 nodes run at
+215 fps; 5000 nodes, the API's own cap, at 80 fps. The previous all-pairs
+implementation managed 30 fps and 3.7 fps respectively. Approximation error
+against the exact sum is 1.30% RMS, and settled layouts are equivalent.
+
+**Storage**
+- WAL journal with PRAGMA tuning — concurrent reads, memory-mapped I/O, so a
+  large database does not consume proportional RAM
+- One connection with a write lock held for the outermost transaction, and
+  `BEGIN IMMEDIATE` so a read-to-write upgrade cannot fail unretryably
+- Batched bulk operations, and every `IN (...)` chunked below SQLite's
+  bound-variable limit
+
+**Embeddings**
+- Content-hash cache keyed by `(hash, model)`, so two models coexist instead of
+  clobbering each other; LRU eviction, batched reads and writes
+- Model loads lazily in a background thread at startup, and inference runs in a
+  worker thread — neither blocks the event loop
+- Optional ONNX backend when `optimum[onnxruntime]` is installed and
+  `--use-onnx` is set, falling back to PyTorch. Off by default; this project
+  publishes no benchmark for it, so no speedup is claimed here.
+
+**Bounds** — every traversal, search, and list response is capped by a named,
+configurable limit, and a capped response says so rather than returning a
+silent subset.
 
 ---
 
