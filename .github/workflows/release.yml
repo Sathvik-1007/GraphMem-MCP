@@ -120,13 +120,25 @@ jobs:
           cd /tmp
           /tmp/relcheck/bin/graph-mem --version
           /tmp/relcheck/bin/python - <<'PY'
-          from graph_mem.cli.install import _assemble_skill_content
-          from graph_mem.ui.server import _resolve_frontend_dir
+          import importlib.resources
+          import pathlib
 
+          from graph_mem.cli.install import _assemble_skill_content
+
+          # The point of this check is that the *data files* made it into the
+          # wheel. It deliberately does not import graph_mem.ui.server, which
+          # needs aiohttp — an optional extra that a bare install does not
+          # have, so importing it here would fail the release for the wrong
+          # reason.
           skill = _assemble_skill_content("general")
           assert len(skill) > 15_000, f"bundled skill is only {len(skill)} chars"
-          assert _resolve_frontend_dir() is not None, "bundled frontend did not resolve"
-          print(f"Wheel is complete: skill {len(skill)} chars, frontend present")
+
+          frontend = pathlib.Path(str(importlib.resources.files("graph_mem.ui") / "frontend"))
+          assert (frontend / "index.html").is_file(), f"no index.html under {frontend}"
+          assets = list((frontend / "assets").glob("*.js"))
+          assert assets, f"no JS bundle under {frontend / 'assets'}"
+
+          print(f"Wheel is complete: skill {len(skill)} chars, frontend {len(assets)} bundle(s)")
           PY
 
       - name: Upload artifacts
