@@ -58,9 +58,28 @@ class SQLiteBackend(StorageBackend):
     # ── Lifecycle ────────────────────────────────────────────────────────
 
     async def initialize(self) -> None:
+        """Open the database and bring its schema up to date.
+
+        Idempotent: a second call on an already-open backend is a no-op.
+        Previously it built a second connection and dropped the first without
+        closing it, leaking a connection per call — the finaliser complaint
+        that produced was silenced in the test configuration rather than fixed.
+
+        Raises:
+            DatabaseError: The database could not be opened. The backend is
+                left closed, not half-open.
+        """
+        if self._db is not None:
+            log.debug("SQLite backend already initialized at %s", self._db_path)
+            return
+
         db = Database(self._db_path)
-        await db.initialize()
-        await run_migrations(db)
+        try:
+            await db.initialize()
+            await run_migrations(db)
+        except BaseException:
+            await db.close()
+            raise
         self._db = db
         self._vec_available = db.vec_loaded
         log.info("SQLite backend initialized at %s (vec=%s)", self._db_path, self._vec_available)

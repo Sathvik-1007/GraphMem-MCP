@@ -86,6 +86,7 @@ warn_unused_configs = true
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
-filterwarnings = [
-    "ignore:Exception in thread.*_connection_worker_thread:pytest.PytestUnhandledThreadExceptionWarning",
-]
+# Warnings are errors. An exception escaping aiosqlite's connection worker
+# thread means a use-after-close or a cancelled in-flight operation, and it was
+# previously silenced here rather than fixed.
+filterwarnings = ["error"]
