@@ -30,3 +30,6 @@ agent-skill-creator/
 
 # Hypothesis example database — machine-local, not part of the project.
 .hypothesis/
+
+# Claude Code agent worktrees — local scratch, never part of the project.
+.claude/
