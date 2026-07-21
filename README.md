@@ -434,7 +434,39 @@ graph-mem install <agent> --global        # global/user-level install
 graph-mem install <agent> --domain code   # use domain overlay (code, research, general)
 ```
 
-Supported agents: `claude`, `opencode`, `cursor`, `windsurf`, `codex`, `gemini`, `copilot`, `amp`, `kiro`, `roocode`, `trae`, `augment`, `continue`, `warp`, `kilocode`, `qoder`, `codebuddy`, `droid`, `antigravity`.
+#### Where the skill is installed
+
+13 of these paths are confirmed against current vendor documentation. The
+remaining 6 are the paths the project has always used, but nobody has checked
+them — `graph-mem install` says so at install time rather than implying they
+are correct, and if the agent does not pick the file up, that is where to look.
+
+| Agent | Project path | Global path | Verified |
+|-------|--------------|-------------|----------|
+| `claude` | `.claude/skills/graph-mem/SKILL.md` | `~/.claude/skills/graph-mem/SKILL.md` | [docs](https://code.claude.com/docs/en/skills) |
+| `opencode` | `.opencode/skills/graph-mem/SKILL.md` | `~/.config/opencode/skills/graph-mem/SKILL.md` | [docs](https://opencode.ai/docs/skills/) |
+| `codex` | `AGENTS.md` | `~/.codex/AGENTS.md` | [docs](https://learn.chatgpt.com/codex/agent-configuration/agents-md) |
+| `gemini` | `GEMINI.md` | `~/.gemini/GEMINI.md` | [docs](https://geminicli.com/docs/cli/gemini-md/) |
+| `cursor` | `.cursor/rules/graph-mem.mdc` | — | [docs](https://cursor.com/docs/rules) |
+| `windsurf` | `.windsurf/rules/graph-mem.md` | `~/.codeium/windsurf/memories/global_rules.md` | [docs](https://docs.windsurf.com/windsurf/cascade/memories) |
+| `amp` | `.agents/skills/graph-mem/SKILL.md` | `~/.config/agents/skills/graph-mem/SKILL.md` | [docs](https://ampcode.com/manual) |
+| `antigravity` | `AGENTS.md` | `~/.gemini/AGENTS.md` | [docs](https://codelabs.developers.google.com/autonomous-ai-developer-pipelines-antigravity) |
+| `copilot` | `.github/copilot-instructions.md` | — | [docs](https://docs.github.com/en/copilot/how-tos/configure-custom-instructions) |
+| `kiro` | `.kiro/steering/graph-mem.md` | `~/.kiro/steering/graph-mem.md` | [docs](https://kiro.dev/docs/steering/) |
+| `roocode` | `.roo/rules/graph-mem.md` | `~/.roo/rules/graph-mem.md` | [docs](https://docs.roocode.com/features/custom-instructions) |
+| `qoder` | `.qoder/skills/graph-mem/SKILL.md` | — | **not verified** |
+| `trae` | `.trae/skills/graph-mem/SKILL.md` | — | **not verified** |
+| `continue` | `.continue/rules/graph-mem.md` | — | [docs](https://docs.continue.dev/customize/deep-dives/rules) |
+| `codebuddy` | `.codebuddy/skills/graph-mem/SKILL.md` | — | **not verified** |
+| `droid` | `AGENTS.md` | `~/.factory/AGENTS.md` | [docs](https://docs.factory.ai/cli/configuration/agents-md) |
+| `kilocode` | `.kilocode/rules/graph-mem.md` | — | **not verified** |
+| `warp` | `.warp/skills/graph-mem/SKILL.md` | — | **not verified** |
+| `augment` | `.augment/skills/graph-mem/SKILL.md` | — | **not verified** |
+
+Agents sharing a file (`AGENTS.md`, `GEMINI.md`,
+`.github/copilot-instructions.md`, Windsurf's global rules) get a delimited
+section written into it, so anything you already wrote there survives, and
+re-installing replaces the section rather than appending a second copy.
 
 ### Graph Management
 

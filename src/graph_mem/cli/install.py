@@ -76,60 +76,63 @@ AGENTS: dict[str, AgentConfig] = {
         global_path=".claude/skills/graph-mem/SKILL.md",
         project_method="overwrite",
         global_method="overwrite",
-        doc_url=None,
+        doc_url="https://code.claude.com/docs/en/skills",
     ),
     "opencode": AgentConfig(
         project_path=".opencode/skills/graph-mem/SKILL.md",
         global_path=".config/opencode/skills/graph-mem/SKILL.md",
         project_method="overwrite",
         global_method="overwrite",
-        doc_url=None,
+        doc_url="https://opencode.ai/docs/skills/",
     ),
     "codex": AgentConfig(
-        project_path=".agents/skills/graph-mem/SKILL.md",
+        # Read from the git root down, plus ~/.codex/AGENTS.md. Both shared files.
+        project_path="AGENTS.md",
         global_path=".codex/AGENTS.md",
-        project_method="overwrite",
+        project_method="section",
         global_method="section",
-        doc_url=None,
+        doc_url="https://learn.chatgpt.com/codex/agent-configuration/agents-md",
     ),
     "gemini": AgentConfig(
-        project_path="AGENTS.md",
-        global_path=".gemini/skills/graph-mem/SKILL.md",
+        # GEMINI.md loads hierarchically from ~/.gemini/ down. Shared files.
+        project_path="GEMINI.md",
+        global_path=".gemini/GEMINI.md",
         project_method="section",
-        global_method="overwrite",
-        doc_url=None,
+        global_method="section",
+        doc_url="https://geminicli.com/docs/cli/gemini-md/",
     ),
     "cursor": AgentConfig(
-        project_path=".cursor/rules/graph-mem.md",
+        # Rules must be .mdc. A .md file in .cursor/rules is silently ignored.
+        project_path=".cursor/rules/graph-mem.mdc",
         global_path=None,
         project_method="overwrite",
         global_method=None,
-        doc_url=None,
+        doc_url="https://cursor.com/docs/rules",
     ),
     "windsurf": AgentConfig(
+        # Global rules are one shared file, so the global install writes a section.
         project_path=".windsurf/rules/graph-mem.md",
-        global_path=None,
+        global_path=".codeium/windsurf/memories/global_rules.md",
         project_method="overwrite",
-        global_method=None,
-        doc_url=None,
+        global_method="section",
+        doc_url="https://docs.windsurf.com/windsurf/cascade/memories",
     ),
     "amp": AgentConfig(
         project_path=".agents/skills/graph-mem/SKILL.md",
         global_path=".config/agents/skills/graph-mem/SKILL.md",
         project_method="overwrite",
         global_method="overwrite",
-        doc_url=None,
+        doc_url="https://ampcode.com/manual",
     ),
     "antigravity": AgentConfig(
-        project_path=".agents/skills/graph-mem/SKILL.md",
-        global_path=None,
-        project_method="overwrite",
-        global_method=None,
-        doc_url=None,
+        project_path="AGENTS.md",
+        global_path=".gemini/AGENTS.md",
+        project_method="section",
+        global_method="section",
+        doc_url="https://codelabs.developers.google.com/autonomous-ai-developer-pipelines-antigravity",
     ),
     "copilot": AgentConfig(
-        # Repository-wide instructions are a single file, always applied.
-        # Written as a section so instructions the user already wrote survive.
+        # A single always-applied file, so a section: what the user wrote survives.
         project_path=".github/copilot-instructions.md",
         global_path=None,
         project_method="section",
@@ -137,7 +140,7 @@ AGENTS: dict[str, AgentConfig] = {
         doc_url="https://docs.github.com/en/copilot/how-tos/configure-custom-instructions",
     ),
     "kiro": AgentConfig(
-        # Steering is a flat directory of markdown files, not of directories.
+        # Steering is a flat directory of .md files, not of directories.
         project_path=".kiro/steering/graph-mem.md",
         global_path=".kiro/steering/graph-mem.md",
         project_method="overwrite",
@@ -145,7 +148,7 @@ AGENTS: dict[str, AgentConfig] = {
         doc_url="https://kiro.dev/docs/steering/",
     ),
     "roocode": AgentConfig(
-        # Roo reads .roo/rules/ recursively; the global scope is ~/.roo/rules/.
+        # Read recursively; global scope is ~/.roo/rules/.
         project_path=".roo/rules/graph-mem.md",
         global_path=".roo/rules/graph-mem.md",
         project_method="overwrite",
@@ -167,7 +170,6 @@ AGENTS: dict[str, AgentConfig] = {
         doc_url=None,
     ),
     "continue": AgentConfig(
-        # Continue reads rules from .continue/rules/*.md — there is no skills/.
         project_path=".continue/rules/graph-mem.md",
         global_path=None,
         project_method="overwrite",
@@ -182,11 +184,11 @@ AGENTS: dict[str, AgentConfig] = {
         doc_url=None,
     ),
     "droid": AgentConfig(
-        project_path=".factory/skills/graph-mem/SKILL.md",
-        global_path=None,
-        project_method="overwrite",
-        global_method=None,
-        doc_url=None,
+        project_path="AGENTS.md",
+        global_path=".factory/AGENTS.md",
+        project_method="section",
+        global_method="section",
+        doc_url="https://docs.factory.ai/cli/configuration/agents-md",
     ),
     "kilocode": AgentConfig(
         # Kilo inherited .kilocode/rules/ from Roo, but its own docs also

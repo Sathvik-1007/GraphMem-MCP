@@ -105,11 +105,11 @@ def test_install_opencode_project(project_dir: Path) -> None:
 
 
 def test_install_cursor_project(project_dir: Path) -> None:
-    """Installing cursor at project level creates .cursor/rules/graph-mem.md."""
+    """Cursor rules must use the .mdc extension — .md files are ignored."""
     result = install_skill("cursor", scope="project", project_dir=project_dir)
 
     assert result.exists()
-    assert result == project_dir / ".cursor" / "rules" / "graph-mem.md"
+    assert result == project_dir / ".cursor" / "rules" / "graph-mem.mdc"
 
     content = result.read_text(encoding="utf-8")
     assert len(content) > 100
@@ -143,11 +143,11 @@ def test_install_cursor_global_raises(home_dir: Path) -> None:
 
 
 def test_install_gemini_project_section(project_dir: Path) -> None:
-    """Gemini uses section method for project, writing into AGENTS.md."""
+    """Gemini reads GEMINI.md, and shares it, so the install writes a section."""
     result = install_skill("gemini", scope="project", project_dir=project_dir)
 
     assert result.exists()
-    assert result == project_dir / "AGENTS.md"
+    assert result == project_dir / "GEMINI.md"
 
     content = result.read_text(encoding="utf-8")
     assert _SECTION_BEGIN in content
@@ -160,7 +160,7 @@ def test_install_section_replaces(project_dir: Path) -> None:
     install_skill("gemini", scope="project", project_dir=project_dir)
     install_skill("gemini", scope="project", project_dir=project_dir)
 
-    target = project_dir / "AGENTS.md"
+    target = project_dir / "GEMINI.md"
     content = target.read_text(encoding="utf-8")
 
     # There should be exactly one begin and one end marker
@@ -197,7 +197,7 @@ def test_uninstall_overwrite(project_dir: Path) -> None:
 def test_uninstall_section(project_dir: Path) -> None:
     """Uninstalling a section agent should remove its markers from the file."""
     install_skill("gemini", scope="project", project_dir=project_dir)
-    target = project_dir / "AGENTS.md"
+    target = project_dir / "GEMINI.md"
     assert target.exists()
     assert _SECTION_BEGIN in target.read_text(encoding="utf-8")
 
@@ -521,3 +521,86 @@ class TestOverwriteInstalls:
         assert uninstall_skill(agent, scope=scope, project_dir=project_dir) is True
         assert not target.exists()
         assert neighbour.read_text(encoding="utf-8") == "not ours\n"
+
+
+# ── Verification status ──────────────────────────────────────────────────────
+
+# Agents whose install path was checked against current vendor documentation.
+# Each must carry the citation. Adding an agent here without a doc_url, or
+# changing a verified path without re-checking the docs, fails the suite.
+VERIFIED_AGENTS = frozenset(
+    {
+        "claude",
+        "opencode",
+        "amp",
+        "cursor",
+        "windsurf",
+        "codex",
+        "gemini",
+        "droid",
+        "copilot",
+        "kiro",
+        "continue",
+        "roocode",
+        "antigravity",
+    }
+)
+
+
+class TestPathVerification:
+    """Paths are either documented or honestly flagged, never silently guessed."""
+
+    @pytest.mark.parametrize("agent", sorted(VERIFIED_AGENTS))
+    def test_verified_agent_carries_its_citation(self, agent: str) -> None:
+        """A path claimed as verified must say where that claim comes from."""
+        assert AGENTS[agent].doc_url, f"{agent} is listed verified but has no doc_url"
+        assert AGENTS[agent].doc_url.startswith("https://")
+
+    @pytest.mark.parametrize("agent", sorted(set(SUPPORTED_AGENTS) - VERIFIED_AGENTS))
+    def test_unverified_agent_has_no_citation(self, agent: str) -> None:
+        """An unchecked path must not carry a citation implying it was checked."""
+        assert AGENTS[agent].doc_url is None, (
+            f"{agent} has a doc_url but is not in VERIFIED_AGENTS — "
+            f"add it there once the path is confirmed"
+        )
+
+    def test_cursor_uses_mdc_not_md(self) -> None:
+        """Cursor ignores .md files in .cursor/rules; only .mdc is read.
+
+        Regression: the installer wrote .md, so the file landed in the right
+        directory and was silently never loaded.
+        """
+        assert AGENTS["cursor"].project_path.endswith(".mdc")
+
+    @pytest.mark.parametrize("agent", ["codex", "gemini", "droid", "antigravity", "copilot"])
+    def test_shared_files_are_written_as_sections(self, agent: str) -> None:
+        """An agent whose file is shared must not overwrite it.
+
+        AGENTS.md, GEMINI.md, and .github/copilot-instructions.md all hold
+        content the user wrote. Overwriting one destroys it.
+        """
+        assert AGENTS[agent].project_method == "section", (
+            f"{agent} writes a shared file and would clobber it"
+        )
+
+    def test_every_supported_agent_is_configured(self) -> None:
+        """SUPPORTED_AGENTS and AGENTS cannot drift apart."""
+        assert set(SUPPORTED_AGENTS) == set(AGENTS)
+
+    @pytest.mark.parametrize("agent", sorted(SUPPORTED_AGENTS))
+    def test_no_path_escapes_its_root(self, agent: str) -> None:
+        """No configured path may traverse upward or be absolute."""
+        cfg = AGENTS[agent]
+        for path in (cfg.project_path, cfg.global_path):
+            if path is None:
+                continue
+            assert not PurePosixPath(path).is_absolute(), f"{agent}: {path} is absolute"
+            assert ".." not in PurePosixPath(path).parts, f"{agent}: {path} traverses upward"
+
+    @pytest.mark.parametrize("agent", sorted(SUPPORTED_AGENTS))
+    def test_global_method_is_set_exactly_when_global_path_is(self, agent: str) -> None:
+        """The two global fields describe one thing and must agree."""
+        cfg = AGENTS[agent]
+        assert (cfg.global_path is None) == (cfg.global_method is None), (
+            f"{agent}: global_path and global_method disagree"
+        )
