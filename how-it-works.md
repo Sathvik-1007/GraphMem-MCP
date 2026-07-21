@@ -329,7 +329,7 @@ graph TD
     Root["src/graph_mem/"]
 
     Entry["server.py + tools/<br/>MCP entry point<br/>28 tool definitions<br/>lifespan + embedding helpers"]
-    CLI["cli/<br/>main.py -- Click CLI commands<br/>install.py -- skill installer, 19 agents"]
+    CLI["cli/<br/>main.py -- Click CLI commands<br/>install.py -- skill installer, 13 agents"]
     DB["db/<br/>connection.py -- aiosqlite wrapper<br/>schema.py -- migration runner<br/>migrations/ -- versioned SQL"]
     GraphMod["graph/<br/>engine.py -- CRUD + entity resolution<br/>traversal.py -- BFS + pathfinding + subgraph<br/>merge.py -- entity consolidation"]
     Models["models/<br/>entity.py -- Entity dataclass<br/>relationship.py -- Relationship dataclass<br/>observation.py -- Observation dataclass"]
@@ -355,7 +355,7 @@ graph TD
 | Module | Responsibility |
 |--------|---------------|
 | `server.py` + `tools/` | MCP server entry point, registers all 28 tools, lifespan management, embedding orchestration |
-| `cli/` | Click CLI commands (server, init, status, export, import, validate, ui) + skill installer for 19 agents, 13 with documented install paths |
+| `cli/` | Click CLI commands (server, init, status, export, import, validate, ui) + skill installer for 13 agents, every install path cited against vendor docs |
 | `db/` | Database class (aiosqlite, WAL mode, PRAGMA tuning) + versioned migrations |
 | `graph/` | GraphEngine CRUD, BFS traversal, path-finding, subgraph extraction, entity merging |
 | `models/` | Dataclasses for Entity, Relationship, Observation |

@@ -49,8 +49,14 @@ def home_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_supported_agents_list() -> None:
-    """All expected agents should be present in SUPPORTED_AGENTS."""
+def test_supported_agents_list():
+    """The supported set is exactly the agents whose paths are documented.
+
+    Six agents (qoder, trae, codebuddy, kilocode, warp, augment) were removed:
+    no authoritative documentation for where they read instructions could be
+    found, and installing to a guessed path reports success while doing
+    nothing.
+    """
     expected = {
         "claude",
         "opencode",
@@ -63,17 +69,11 @@ def test_supported_agents_list() -> None:
         "copilot",
         "kiro",
         "roocode",
-        "qoder",
-        "trae",
         "continue",
-        "codebuddy",
         "droid",
-        "kilocode",
-        "warp",
-        "augment",
     }
     assert set(SUPPORTED_AGENTS) == expected
-    assert len(SUPPORTED_AGENTS) == 19
+    assert len(SUPPORTED_AGENTS) == 13
 
 
 # ---------------------------------------------------------------------------
@@ -523,58 +523,35 @@ class TestOverwriteInstalls:
         assert neighbour.read_text(encoding="utf-8") == "not ours\n"
 
 
-# ── Verification status ──────────────────────────────────────────────────────
-
-# Agents whose install path was checked against current vendor documentation.
-# Each must carry the citation. Adding an agent here without a doc_url, or
-# changing a verified path without re-checking the docs, fails the suite.
-VERIFIED_AGENTS = frozenset(
-    {
-        "claude",
-        "opencode",
-        "amp",
-        "cursor",
-        "windsurf",
-        "codex",
-        "gemini",
-        "droid",
-        "copilot",
-        "kiro",
-        "continue",
-        "roocode",
-        "antigravity",
-    }
-)
+# ── Registry integrity ───────────────────────────────────────────────────────
 
 
-class TestPathVerification:
-    """Paths are either documented or honestly flagged, never silently guessed."""
+class TestAgentRegistry:
+    """Every supported agent is cited, consistent, and cannot escape its root.
 
-    @pytest.mark.parametrize("agent", sorted(VERIFIED_AGENTS))
-    def test_verified_agent_carries_its_citation(self, agent: str) -> None:
-        """A path claimed as verified must say where that claim comes from."""
-        assert AGENTS[agent].doc_url, f"{agent} is listed verified but has no doc_url"
-        assert AGENTS[agent].doc_url.startswith("https://")
+    Six agents were removed rather than shipped on a guessed path. A path that
+    writes a file the agent never reads is worse than no support: it reports
+    success. These tests make that standard structural.
+    """
 
-    @pytest.mark.parametrize("agent", sorted(set(SUPPORTED_AGENTS) - VERIFIED_AGENTS))
-    def test_unverified_agent_has_no_citation(self, agent: str) -> None:
-        """An unchecked path must not carry a citation implying it was checked."""
-        assert AGENTS[agent].doc_url is None, (
-            f"{agent} has a doc_url but is not in VERIFIED_AGENTS — "
-            f"add it there once the path is confirmed"
-        )
+    @pytest.mark.parametrize("agent", sorted(SUPPORTED_AGENTS))
+    def test_every_agent_cites_its_source(self, agent: str) -> None:
+        """No agent ships without documentation for where it installs."""
+        doc_url = AGENTS[agent].doc_url
+        assert doc_url, f"{agent} has no doc_url"
+        assert doc_url.startswith("https://"), f"{agent}: {doc_url!r} is not a URL"
 
     def test_cursor_uses_mdc_not_md(self) -> None:
-        """Cursor ignores .md files in .cursor/rules; only .mdc is read.
+        """Cursor ignores .md in .cursor/rules; only .mdc is loaded.
 
         Regression: the installer wrote .md, so the file landed in the right
-        directory and was silently never loaded.
+        directory under the right name and was silently never read.
         """
         assert AGENTS["cursor"].project_path.endswith(".mdc")
 
     @pytest.mark.parametrize("agent", ["codex", "gemini", "droid", "antigravity", "copilot"])
     def test_shared_files_are_written_as_sections(self, agent: str) -> None:
-        """An agent whose file is shared must not overwrite it.
+        """An agent whose target file is shared must not overwrite it.
 
         AGENTS.md, GEMINI.md, and .github/copilot-instructions.md all hold
         content the user wrote. Overwriting one destroys it.
@@ -589,7 +566,7 @@ class TestPathVerification:
 
     @pytest.mark.parametrize("agent", sorted(SUPPORTED_AGENTS))
     def test_no_path_escapes_its_root(self, agent: str) -> None:
-        """No configured path may traverse upward or be absolute."""
+        """No configured path may be absolute or traverse upward."""
         cfg = AGENTS[agent]
         for path in (cfg.project_path, cfg.global_path):
             if path is None:
@@ -598,9 +575,16 @@ class TestPathVerification:
             assert ".." not in PurePosixPath(path).parts, f"{agent}: {path} traverses upward"
 
     @pytest.mark.parametrize("agent", sorted(SUPPORTED_AGENTS))
-    def test_global_method_is_set_exactly_when_global_path_is(self, agent: str) -> None:
-        """The two global fields describe one thing and must agree."""
+    def test_global_fields_agree(self, agent: str) -> None:
+        """global_path and global_method describe one thing and must match."""
         cfg = AGENTS[agent]
         assert (cfg.global_path is None) == (cfg.global_method is None), (
             f"{agent}: global_path and global_method disagree"
         )
+
+    @pytest.mark.parametrize("agent", sorted(SUPPORTED_AGENTS))
+    def test_methods_are_known_values(self, agent: str) -> None:
+        """Only 'overwrite' and 'section' are implemented."""
+        cfg = AGENTS[agent]
+        assert cfg.project_method in ("overwrite", "section")
+        assert cfg.global_method in ("overwrite", "section", None)

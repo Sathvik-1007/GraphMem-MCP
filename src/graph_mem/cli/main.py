@@ -311,19 +311,9 @@ def install(agent: str, scope: str, project_dir: str | None, domain: str) -> Non
         click.secho(f"Installed {agent} skill ({scope}, domain={domain}):", fg="green")
         click.echo(f"  {result_path}")
 
-        # Say whether this location is one we could confirm against vendor
-        # documentation. A path that silently does nothing because the agent
-        # reads somewhere else is worse than one the user knows to check.
-        doc_url = AGENTS[agent].doc_url
-        if doc_url:
-            click.echo(f"  Location documented at: {doc_url}")
-        else:
-            click.secho(
-                "  Note: this location is not confirmed against current vendor "
-                f"documentation. If {agent} does not pick the file up, check "
-                "where it reads instructions from and move the file there.",
-                fg="yellow",
-            )
+        # Every supported agent's location is cited, so the user can check the
+        # claim rather than take it on faith.
+        click.echo(f"  Location documented at: {AGENTS[agent].doc_url}")
 
         click.secho(
             f"  No MCP config was written — add graph-mem to {agent}'s MCP config yourself:",

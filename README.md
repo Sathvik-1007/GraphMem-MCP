@@ -9,6 +9,11 @@ Graph-Mem MCP is a universal MCP server that gives any agent or IDE persistent, 
 
 ### Works With
 
+graph-mem is a standard MCP server, so it works with **any** MCP-compatible
+agent, IDE, or framework. `graph-mem install` additionally writes the skill
+file straight into the right place for these 13, each at a path cited against
+the vendor's own documentation:
+
 <table>
 <tr>
 <td><b>Claude Code</b></td>
@@ -16,28 +21,26 @@ Graph-Mem MCP is a universal MCP server that gives any agent or IDE persistent, 
 <td><b>Cursor</b></td>
 <td><b>Windsurf</b></td>
 <td><b>Codex CLI</b></td>
-<td><b>Gemini CLI</b></td>
 </tr>
 <tr>
+<td><b>Gemini CLI</b></td>
 <td><b>GitHub Copilot</b></td>
 <td><b>Amp</b></td>
 <td><b>Kiro</b></td>
 <td><b>Roo Code</b></td>
-<td><b>Trae</b></td>
-<td><b>Augment</b></td>
 </tr>
 <tr>
 <td><b>Continue</b></td>
-<td><b>Warp</b></td>
-<td><b>KiloCode</b></td>
-<td><b>Qoder</b></td>
-<td><b>CodeBuddy</b></td>
+<td><b>Antigravity</b></td>
 <td><b>Droid (Factory)</b></td>
-</tr>
-<tr>
-<td colspan="6"><b>Antigravity</b> · and any MCP-compatible agent, IDE, or framework</td>
+<td colspan="2"><a href="CONTRIBUTING.md#adding-an-agent">add yours →</a></td>
 </tr>
 </table>
+
+Using something else? The MCP config below is all you need; the skill file is a
+convenience, not a requirement. Adding your agent to the installer takes a
+documented path and about ten lines — see
+[Adding an Agent](CONTRIBUTING.md#adding-an-agent).
 
 ---
 
@@ -70,25 +73,19 @@ pip install graph-mem
 **2. Install the skill for your agent:**
 
 ```bash
-graph-mem install opencode      # OpenCode
-graph-mem install claude        # Claude Code
-graph-mem install cursor        # Cursor
-graph-mem install windsurf      # Windsurf
-graph-mem install codex         # Codex CLI
-graph-mem install gemini        # Gemini CLI
-graph-mem install copilot       # GitHub Copilot
-graph-mem install amp           # Amp
-graph-mem install kiro          # Kiro
-graph-mem install roocode       # Roo Code
-graph-mem install trae          # Trae
-graph-mem install augment       # Augment
-graph-mem install continue      # Continue
-graph-mem install warp          # Warp
-graph-mem install kilocode      # KiloCode
-graph-mem install qoder         # Qoder
-graph-mem install codebuddy     # CodeBuddy
-graph-mem install droid         # Droid (Factory)
-graph-mem install antigravity   # Antigravity
+graph-mem install claude       # Claude Code
+graph-mem install opencode     # OpenCode
+graph-mem install codex        # Codex CLI
+graph-mem install gemini       # Gemini CLI
+graph-mem install cursor       # Cursor
+graph-mem install windsurf     # Windsurf
+graph-mem install amp          # Amp
+graph-mem install antigravity  # Antigravity
+graph-mem install copilot      # GitHub Copilot
+graph-mem install kiro         # Kiro
+graph-mem install roocode      # Roo Code
+graph-mem install continue     # Continue
+graph-mem install droid        # Droid (Factory)
 ```
 
 This writes a skill file that teaches your agent how to use all 28 MCP tools — when to search, when to add entities, naming conventions, and common workflows.
@@ -138,7 +135,8 @@ Paste this into your agent's chat to get started immediately:
 I want you to give yourself persistent memory using graph-mem. Run the following:
 
 pip install graph-mem
-graph-mem install opencode    # or: claude, cursor, windsurf, codex, gemini, copilot, amp, kiro, roocode, trae, augment, continue, warp, kilocode, qoder, codebuddy, droid, antigravity
+graph-mem install claude    # or: opencode, codex, gemini, cursor, windsurf, amp,
+                            #     antigravity, copilot, kiro, roocode, continue, droid
 
 This installs a skill file that teaches you how to use all 28 MCP tools.
 The server should already be configured in your MCP config. If not, add it:
@@ -436,37 +434,35 @@ graph-mem install <agent> --domain code   # use domain overlay (code, research, 
 
 #### Where the skill is installed
 
-13 of these paths are confirmed against current vendor documentation. The
-remaining 6 are the paths the project has always used, but nobody has checked
-them — `graph-mem install` says so at install time rather than implying they
-are correct, and if the agent does not pick the file up, that is where to look.
+Every path below is cited against the vendor's current documentation. An agent
+whose install location cannot be cited is not listed here — a guessed path
+reports success, writes a file, and the agent never reads it, which is worse
+than no support. Six agents were removed on exactly those grounds.
 
-| Agent | Project path | Global path | Verified |
-|-------|--------------|-------------|----------|
-| `claude` | `.claude/skills/graph-mem/SKILL.md` | `~/.claude/skills/graph-mem/SKILL.md` | [docs](https://code.claude.com/docs/en/skills) |
-| `opencode` | `.opencode/skills/graph-mem/SKILL.md` | `~/.config/opencode/skills/graph-mem/SKILL.md` | [docs](https://opencode.ai/docs/skills/) |
-| `codex` | `AGENTS.md` | `~/.codex/AGENTS.md` | [docs](https://learn.chatgpt.com/codex/agent-configuration/agents-md) |
-| `gemini` | `GEMINI.md` | `~/.gemini/GEMINI.md` | [docs](https://geminicli.com/docs/cli/gemini-md/) |
-| `cursor` | `.cursor/rules/graph-mem.mdc` | — | [docs](https://cursor.com/docs/rules) |
-| `windsurf` | `.windsurf/rules/graph-mem.md` | `~/.codeium/windsurf/memories/global_rules.md` | [docs](https://docs.windsurf.com/windsurf/cascade/memories) |
-| `amp` | `.agents/skills/graph-mem/SKILL.md` | `~/.config/agents/skills/graph-mem/SKILL.md` | [docs](https://ampcode.com/manual) |
-| `antigravity` | `AGENTS.md` | `~/.gemini/AGENTS.md` | [docs](https://codelabs.developers.google.com/autonomous-ai-developer-pipelines-antigravity) |
-| `copilot` | `.github/copilot-instructions.md` | — | [docs](https://docs.github.com/en/copilot/how-tos/configure-custom-instructions) |
-| `kiro` | `.kiro/steering/graph-mem.md` | `~/.kiro/steering/graph-mem.md` | [docs](https://kiro.dev/docs/steering/) |
-| `roocode` | `.roo/rules/graph-mem.md` | `~/.roo/rules/graph-mem.md` | [docs](https://docs.roocode.com/features/custom-instructions) |
-| `qoder` | `.qoder/skills/graph-mem/SKILL.md` | — | **not verified** |
-| `trae` | `.trae/skills/graph-mem/SKILL.md` | — | **not verified** |
-| `continue` | `.continue/rules/graph-mem.md` | — | [docs](https://docs.continue.dev/customize/deep-dives/rules) |
-| `codebuddy` | `.codebuddy/skills/graph-mem/SKILL.md` | — | **not verified** |
-| `droid` | `AGENTS.md` | `~/.factory/AGENTS.md` | [docs](https://docs.factory.ai/cli/configuration/agents-md) |
-| `kilocode` | `.kilocode/rules/graph-mem.md` | — | **not verified** |
-| `warp` | `.warp/skills/graph-mem/SKILL.md` | — | **not verified** |
-| `augment` | `.augment/skills/graph-mem/SKILL.md` | — | **not verified** |
+| Agent | Project path | User-level path | Written as | Source |
+|-------|--------------|-----------------|------------|--------|
+| `claude` | `.claude/skills/graph-mem/SKILL.md` | `~/.claude/skills/graph-mem/SKILL.md` | own file | [docs](https://code.claude.com/docs/en/skills) |
+| `opencode` | `.opencode/skills/graph-mem/SKILL.md` | `~/.config/opencode/skills/graph-mem/SKILL.md` | own file | [docs](https://opencode.ai/docs/skills/) |
+| `codex` | `AGENTS.md` | `~/.codex/AGENTS.md` | section | [docs](https://learn.chatgpt.com/codex/agent-configuration/agents-md) |
+| `gemini` | `GEMINI.md` | `~/.gemini/GEMINI.md` | section | [docs](https://geminicli.com/docs/cli/gemini-md/) |
+| `cursor` | `.cursor/rules/graph-mem.mdc` | — | own file | [docs](https://cursor.com/docs/rules) |
+| `windsurf` | `.windsurf/rules/graph-mem.md` | `~/.codeium/windsurf/memories/global_rules.md` | own file | [docs](https://docs.windsurf.com/windsurf/cascade/memories) |
+| `amp` | `.agents/skills/graph-mem/SKILL.md` | `~/.config/agents/skills/graph-mem/SKILL.md` | own file | [docs](https://ampcode.com/manual) |
+| `antigravity` | `AGENTS.md` | `~/.gemini/AGENTS.md` | section | [docs](https://codelabs.developers.google.com/autonomous-ai-developer-pipelines-antigravity) |
+| `copilot` | `.github/copilot-instructions.md` | — | section | [docs](https://docs.github.com/en/copilot/how-tos/configure-custom-instructions) |
+| `kiro` | `.kiro/steering/graph-mem.md` | `~/.kiro/steering/graph-mem.md` | own file | [docs](https://kiro.dev/docs/steering/) |
+| `roocode` | `.roo/rules/graph-mem.md` | `~/.roo/rules/graph-mem.md` | own file | [docs](https://docs.roocode.com/features/custom-instructions) |
+| `continue` | `.continue/rules/graph-mem.md` | — | own file | [docs](https://docs.continue.dev/customize/deep-dives/rules) |
+| `droid` | `AGENTS.md` | `~/.factory/AGENTS.md` | section | [docs](https://docs.factory.ai/cli/configuration/agents-md) |
 
-Agents sharing a file (`AGENTS.md`, `GEMINI.md`,
-`.github/copilot-instructions.md`, Windsurf's global rules) get a delimited
-section written into it, so anything you already wrote there survives, and
-re-installing replaces the section rather than appending a second copy.
+Agents whose target file is shared — `AGENTS.md`, `GEMINI.md`,
+`.github/copilot-instructions.md`, Windsurf's global rules — get a delimited
+section written into it. Anything you already have in the file survives, and
+re-installing replaces the section instead of appending a second copy.
+
+Want another agent supported? See
+[Adding an Agent](CONTRIBUTING.md#adding-an-agent) — it takes a documented
+path and about ten lines.
 
 ### Graph Management
 

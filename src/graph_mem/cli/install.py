@@ -3,9 +3,8 @@
 Usage:
     graph-mem install <agent> [--global]
 
-Supports: claude, opencode, codex, gemini, cursor, windsurf, amp,
-          antigravity, copilot, kiro, roocode, qoder, trae, continue,
-          codebuddy, droid, kilocode, warp, augment.
+Every install location in this module is cited against current vendor
+documentation. Adding an agent requires that citation — see CONTRIBUTING.md.
 """
 
 from __future__ import annotations
@@ -36,14 +35,8 @@ SUPPORTED_AGENTS: tuple[str, ...] = (
     "copilot",
     "kiro",
     "roocode",
-    "qoder",
-    "trae",
     "continue",
-    "codebuddy",
     "droid",
-    "kilocode",
-    "warp",
-    "augment",
 )
 
 
@@ -57,17 +50,20 @@ class AgentConfig:
     forced those two into hardcoded branches that contradicted the stored
     value.
 
-    ``doc_url`` is the vendor page that documents ``project_path``. It is
-    ``None`` when no authoritative documentation for the path could be found;
-    the CLI says so at install time rather than implying the location is
-    confirmed.
+    ``doc_url`` is the vendor page documenting ``project_path``, and it is
+    required. An agent whose install location cannot be cited does not belong
+    in this table: a path that quietly writes a file the agent never reads is
+    worse than no support at all, because it reports success. Six agents were
+    removed for exactly that reason rather than shipped on a guess.
+
+    To add an agent, see the contributor guide.
     """
 
     project_path: str  # relative to project root
     global_path: str | None  # relative to ~, or None if the agent has no user scope
     project_method: str  # "overwrite" or "section"
     global_method: str | None  # as above; None exactly when global_path is None
-    doc_url: str | None  # vendor documentation for the path, or None if unverified
+    doc_url: str  # vendor documentation for project_path — required, see above
 
 
 AGENTS: dict[str, AgentConfig] = {
@@ -155,20 +151,6 @@ AGENTS: dict[str, AgentConfig] = {
         global_method="overwrite",
         doc_url="https://docs.roocode.com/features/custom-instructions",
     ),
-    "qoder": AgentConfig(
-        project_path=".qoder/skills/graph-mem/SKILL.md",
-        global_path=None,
-        project_method="overwrite",
-        global_method=None,
-        doc_url=None,
-    ),
-    "trae": AgentConfig(
-        project_path=".trae/skills/graph-mem/SKILL.md",
-        global_path=None,
-        project_method="overwrite",
-        global_method=None,
-        doc_url=None,
-    ),
     "continue": AgentConfig(
         project_path=".continue/rules/graph-mem.md",
         global_path=None,
@@ -176,44 +158,12 @@ AGENTS: dict[str, AgentConfig] = {
         global_method=None,
         doc_url="https://docs.continue.dev/customize/deep-dives/rules",
     ),
-    "codebuddy": AgentConfig(
-        project_path=".codebuddy/skills/graph-mem/SKILL.md",
-        global_path=None,
-        project_method="overwrite",
-        global_method=None,
-        doc_url=None,
-    ),
     "droid": AgentConfig(
         project_path="AGENTS.md",
         global_path=".factory/AGENTS.md",
         project_method="section",
         global_method="section",
         doc_url="https://docs.factory.ai/cli/configuration/agents-md",
-    ),
-    "kilocode": AgentConfig(
-        # Kilo inherited .kilocode/rules/ from Roo, but its own docs also
-        # describe a newer single-file kilo.jsonc config. The two accounts
-        # disagree, so this path stays flagged unverified rather than guessed
-        # with false confidence.
-        project_path=".kilocode/rules/graph-mem.md",
-        global_path=None,
-        project_method="overwrite",
-        global_method=None,
-        doc_url=None,
-    ),
-    "warp": AgentConfig(
-        project_path=".warp/skills/graph-mem/SKILL.md",
-        global_path=None,
-        project_method="overwrite",
-        global_method=None,
-        doc_url=None,
-    ),
-    "augment": AgentConfig(
-        project_path=".augment/skills/graph-mem/SKILL.md",
-        global_path=None,
-        project_method="overwrite",
-        global_method=None,
-        doc_url=None,
     ),
 }
 

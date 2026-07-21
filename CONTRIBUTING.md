@@ -87,6 +87,96 @@ pytest tests/test_storage/        # storage backend tests
 pytest -x -q --tb=short           # quick mode — stop on first failure
 ```
 
+## Adding an Agent
+
+`graph-mem install <agent>` writes the skill file where that agent reads its
+instructions. Thirteen agents are supported, and **every one of them cites the
+vendor documentation for its path**. That rule is enforced by the test suite,
+and it exists because a guessed path is worse than no support: the install
+prints success, writes a file, and the agent never reads it. Six agents were
+removed from this project for exactly that reason.
+
+So adding one starts with research, not code.
+
+### 1. Find out where the agent actually reads from
+
+Locate the vendor's own documentation — not a blog post, not an inference from
+a similar tool. You need to answer four questions:
+
+- What is the **project-level** path, exactly, including the file extension?
+  (Cursor loads `.cursor/rules/*.mdc` and *silently ignores* `.md` in the same
+  directory. That distinction cost this project a broken integration.)
+- Is there a **user-level** path, and what is it? It is often not a mirror of
+  the project path — Windsurf's is
+  `~/.codeium/windsurf/memories/global_rules.md`, nothing like its project
+  path.
+- Is the target file **dedicated to us, or shared**? `AGENTS.md`, `GEMINI.md`,
+  and `.github/copilot-instructions.md` all hold content the user wrote.
+- Does the agent read the file **automatically**, or only when invoked?
+
+If you cannot find documentation, stop. Open an issue instead — that is a more
+useful contribution than a plausible guess.
+
+### 2. Add the entry
+
+In `src/graph_mem/cli/install.py`:
+
+```python
+SUPPORTED_AGENTS: tuple[str, ...] = (
+    ...,
+    "youragent",
+)
+
+AGENTS: dict[str, AgentConfig] = {
+    ...,
+    "youragent": AgentConfig(
+        # A note here if the path is surprising — future readers will wonder.
+        project_path=".youragent/rules/graph-mem.md",
+        global_path=".config/youragent/rules/graph-mem.md",  # or None
+        project_method="overwrite",
+        global_method="overwrite",                            # None iff global_path is None
+        doc_url="https://docs.youragent.dev/rules",
+    ),
+}
+```
+
+Field by field:
+
+| Field | Meaning |
+|-------|---------|
+| `project_path` | Relative to the project root. Never absolute, never contains `..`. |
+| `global_path` | Relative to `~`. `None` if the agent has no user scope. |
+| `project_method` | `"overwrite"` for a file that is ours; `"section"` for a shared one. |
+| `global_method` | Same, for the user scope. Must be `None` exactly when `global_path` is. |
+| `doc_url` | The vendor page you found in step 1. Required. |
+
+**Choosing the method.** `"overwrite"` replaces the whole file, so use it only
+when the path is ours alone — a dedicated `graph-mem.md` or
+`graph-mem/SKILL.md`. `"section"` writes between `<!-- graph-mem-begin -->` and
+`<!-- graph-mem-end -->` markers, leaving everything else in the file intact and
+replacing the section on re-install. Use it for any shared file. Getting this
+wrong destroys the user's own instructions, so when in doubt, use `"section"`.
+
+### 3. Add the tests
+
+The registry tests in `tests/test_cli/test_install.py` cover your agent
+automatically — citation present, no path escapes its root, global fields
+agree, methods are known values. Two things you add by hand:
+
+- the agent's name in `test_supported_agents_list`
+- an install test asserting the exact resolved path, following the existing
+  `test_install_*_project` pattern
+
+If the agent uses `"section"`, also cover that installing twice leaves one
+section and that unrelated content in the file survives.
+
+### 4. Update the docs
+
+The agent table in the README lists every path with its citation. Keep it in
+step — it is the table users read before trusting the installer.
+
+---
+
 ## Reporting Bugs
 
 Open an issue at [GitHub Issues](https://github.com/Sathvik-1007/GraphMem-MCP/issues) with:
