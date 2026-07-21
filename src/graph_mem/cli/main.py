@@ -56,10 +56,10 @@ async def _open_db(
     project_dir: str | None = None,
     graph_name: str | None = None,
 ) -> tuple[Any, Any]:
-    """Open storage backend and return (StorageBackend, GraphEngine) for CLI commands.
+    """Open storage backend and return (SQLiteBackend, GraphEngine) for CLI commands.
 
     Lazily imports heavy modules so that lightweight commands (like
-    ``--version``) stay fast. The returned "db" object is a StorageBackend
+    ``--version``) stay fast. The returned "db" object is a SQLiteBackend
     instance (typically SQLiteBackend) that CLI commands can use for
     raw queries, and the GraphEngine is wired to the same backend.
     """

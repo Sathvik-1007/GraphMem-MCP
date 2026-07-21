@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from graph_mem.graph.engine import ObservationResult
+from typing import Any
 
 from graph_mem.models import Observation
 from graph_mem.utils import GraphMemError
 
-from ._core import _embed_observations, _error_response, _require_state, tool
+from ._core import (
+    _embed_observation_texts,
+    _embed_observations,
+    _error_response,
+    _require_state,
+    _require_text,
+    _require_text_list,
+    tool,
+)
 
 
 @tool()
@@ -31,6 +36,9 @@ async def add_observations(
     """
     try:
         state = _require_state()
+        entity_name = _require_text(entity_name, "entity_name")
+        observations = _require_text_list(observations, "observations")
+        source = _require_text(source, "source", allow_empty=True)
 
         obs_objs = [Observation.pending(text, source=source) for text in observations]
 
@@ -61,6 +69,8 @@ async def delete_observations(
     """
     try:
         state = _require_state()
+        entity_name = _require_text(entity_name, "entity_name")
+        observation_ids = _require_text_list(observation_ids, "observation_ids")
 
         deleted = await state.graph.delete_observations(entity_name, observation_ids)
 
@@ -93,15 +103,14 @@ async def update_observation(
     """
     try:
         state = _require_state()
+        entity_name = _require_text(entity_name, "entity_name")
+        observation_id = _require_text(observation_id, "observation_id")
+        content = _require_text(content, "content")
 
         result = await state.graph.update_observation(entity_name, observation_id, content)
 
         # Recompute embedding for updated content
-        if state.embeddings.available:
-            obs_results: list[ObservationResult] = [
-                {"id": observation_id, "entity_id": "", "content": content},
-            ]
-            await _embed_observations(obs_results)
+        await _embed_observation_texts([(observation_id, content)])
 
         return result
 

@@ -6,7 +6,7 @@ optimized, and entity resolution uses a cascade strategy:
 exact match -> case-insensitive match -> FTS5 suggestions.
 
 The engine is **storage-agnostic**: it delegates all persistence to a
-:class:`StorageBackend` instance, which can be SQLite, Neo4j, Memgraph,
+:class:`SQLiteBackend` instance, which can be SQLite, Neo4j, Memgraph,
 or any other registered backend.
 """
 
@@ -25,7 +25,7 @@ from graph_mem.utils.ids import generate_id
 from graph_mem.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from graph_mem.storage.base import StorageBackend
+    from graph_mem.storage import SQLiteBackend
 
 log = get_logger("graph.engine")
 
@@ -81,12 +81,12 @@ class GraphEngine:
     transactions. Batch methods process items in a single transaction
     for performance.
 
-    The engine accepts a :class:`StorageBackend` and delegates all
+    The engine accepts a :class:`SQLiteBackend` and delegates all
     persistence and query operations to it. This makes the engine
     compatible with any backend (SQLite, Neo4j, Memgraph, etc.).
     """
 
-    def __init__(self, storage: StorageBackend) -> None:
+    def __init__(self, storage: SQLiteBackend) -> None:
         self._storage = storage
 
     # ── Entity CRUD ──────────────────────────────────────────────────────
@@ -414,11 +414,26 @@ class GraphEngine:
         )
         return results
 
-    async def get_observations(self, entity_name: str) -> list[Observation]:
-        """Get all observations for a named entity, newest first."""
+    async def get_observations(
+        self, entity_name: str, limit: int | None = None
+    ) -> list[Observation]:
+        """Get observations for a named entity, newest first.
+
+        Args:
+            entity_name: Entity to read from.
+            limit: Maximum observations to read. ``None`` reads all of them.
+                Pass a limit when only a page is displayed — the read is
+                bounded in SQL rather than after the fact, so a hot entity
+                does not load thousands of rows to show fifty.
+        """
         entity = await self.resolve_entity(entity_name)
-        rows = await self._storage.get_observations_for_entity(entity.id)
+        rows = await self._storage.get_observations_for_entity(entity.id, limit)
         return [Observation.from_row(row) for row in rows]
+
+    async def count_observations(self, entity_name: str) -> int:
+        """Count a named entity's observations without reading them."""
+        entity = await self.resolve_entity(entity_name)
+        return await self._storage.count_observations_for_entity(entity.id)
 
     async def delete_observations(self, entity_name: str, observation_ids: list[str]) -> int:
         """Delete specific observations from an entity.

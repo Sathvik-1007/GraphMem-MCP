@@ -1,9 +1,14 @@
 """SQLite storage backend — the default and reference implementation.
 
 Wraps the existing ``Database`` class and implements every method of
-:class:`StorageBackend`. All SQL is kept in this module so that a
-different backend (Neo4j, Memgraph) only needs to implement the same
-abstract interface in its own module without touching any SQL.
+the storage interface the graph, semantic, and tool layers depend on.
+
+This is the only storage backend. There was previously a 476-line abstract
+base class here promising Neo4j/Memgraph/PostgreSQL support, but its own
+``fetch_all(sql)`` and ``fetch_one(sql)`` methods took raw SQL strings, which
+no graph-database backend can implement — and fifteen call sites outside this
+package already went through them. The abstraction could not deliver what it
+claimed, so it was removed rather than left as a promise.
 """
 
 from __future__ import annotations
@@ -20,7 +25,6 @@ if TYPE_CHECKING:
 
 from graph_mem.db.connection import Database
 from graph_mem.db.schema import run_migrations
-from graph_mem.storage.base import StorageBackend
 from graph_mem.utils.errors import DatabaseError
 from graph_mem.utils.logging import get_logger
 
@@ -56,8 +60,8 @@ def _encode_update_values(updates: dict[str, Any]) -> list[Any]:
     return encoded
 
 
-class SQLiteBackend(StorageBackend):
-    """SQLite + sqlite-vec + FTS5 implementation of :class:`StorageBackend`.
+class SQLiteBackend:
+    """SQLite + sqlite-vec + FTS5 storage for the knowledge graph.
 
     Delegates connection management to :class:`Database` and adds the
     higher-level CRUD queries that ``GraphEngine``, ``HybridSearch``,
@@ -520,11 +524,32 @@ class SQLiteBackend(StorageBackend):
             (obs_id, entity_id, content, source, created_at),
         )
 
-    async def get_observations_for_entity(self, entity_id: str) -> list[dict[str, Any]]:
-        return await self._require_db().fetch_all(
-            "SELECT * FROM observations WHERE entity_id = ? ORDER BY created_at DESC",
+    async def get_observations_for_entity(
+        self, entity_id: str, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Return an entity's observations, newest first.
+
+        Args:
+            entity_id: Owning entity.
+            limit: Maximum rows to read. ``None`` reads all of them. Callers
+                that only display a page should pass a limit: an entity with
+                thousands of observations otherwise loads every row into
+                memory to show fifty.
+        """
+        sql = "SELECT * FROM observations WHERE entity_id = ? ORDER BY created_at DESC"
+        params: tuple[object, ...] = (entity_id,)
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (entity_id, max(0, limit))
+        return await self._require_db().fetch_all(sql, params)
+
+    async def count_observations_for_entity(self, entity_id: str) -> int:
+        """Count an entity's observations without reading them."""
+        row = await self._require_db().fetch_one(
+            "SELECT COUNT(*) AS cnt FROM observations WHERE entity_id = ?",
             (entity_id,),
         )
+        return int(row["cnt"]) if row else 0
 
     async def move_observations(self, from_entity_id: str, to_entity_id: str) -> int:
         cursor = await self._require_db().execute(
@@ -932,9 +957,7 @@ class SQLiteBackend(StorageBackend):
             parents.update({str(r["id"]): str(r["entity_id"]) for r in rows})
         return parents
 
-    async def fetch_observations_for_entities(
-        self, entity_ids: list[str]
-    ) -> list[dict[str, Any]]:
+    async def fetch_observations_for_entities(self, entity_ids: list[str]) -> list[dict[str, Any]]:
         """Return every observation belonging to any of *entity_ids*, newest first."""
         if not entity_ids:
             return []

@@ -25,7 +25,7 @@ from graph_mem.ui.routes import setup_routes
 
 
 class MockStorage:
-    """Minimal mock of StorageBackend for UI route tests."""
+    """Minimal mock of SQLiteBackend for UI route tests."""
 
     async def list_entities(self, entity_type=None, limit=100, offset=0):
         entities = [

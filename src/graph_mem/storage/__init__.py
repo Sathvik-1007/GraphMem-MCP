@@ -1,4 +1,9 @@
-"""Storage layer for graph-mem — backend registry and factory.
+"""Storage layer for graph-mem.
+
+Owns persistence: SQL, schema migrations, and the connection lifecycle. It does
+not know what a traversal or a search ranking is — those live in
+:mod:`graph_mem.graph` and :mod:`graph_mem.semantic`, which depend on this
+package one way only.
 
 Usage::
 
@@ -7,11 +12,17 @@ Usage::
     backend = create_backend("sqlite", db_path=Path(".graphmem/graph.db"))
     await backend.initialize()
 
-To register a custom backend::
-
-    from graph_mem.storage import register_backend
-
-    register_backend("neo4j", Neo4jBackend)
+There is one backend. A previous version of this module carried a plugin
+registry and a 476-line abstract base class advertising Neo4j, Memgraph, and
+PostgreSQL support. Neither worked: ``create_backend`` resolved a class from
+the registry and then returned ``SQLiteBackend`` regardless, ``Config`` only
+accepted ``"sqlite"`` so no other backend could have been selected anyway, and
+the base class's own ``fetch_all(sql)`` / ``fetch_one(sql)`` signatures took
+raw SQL strings that no graph database can implement — while fifteen call sites
+outside this package already relied on exactly those methods. The abstraction
+could not deliver what it promised. All it produced in practice was a 190-line
+stub in the test suite that had to be extended every time a real method was
+added. The concrete backend is now the interface.
 """
 
 from __future__ import annotations
@@ -19,77 +30,45 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from graph_mem.storage.base import StorageBackend
 from graph_mem.storage.sqlite_backend import SQLiteBackend
 from graph_mem.utils.errors import ConfigError
 
-# ── Backend registry ─────────────────────────────────────────────────────
-
-_REGISTRY: dict[str, type[StorageBackend]] = {
-    "sqlite": SQLiteBackend,
-}
-
-
-def register_backend(name: str, cls: type[StorageBackend]) -> None:
-    """Register a storage backend class under *name*.
-
-    Third-party backends (Neo4j, Memgraph, PostgreSQL) call this at
-    import time or via a plugin entry point so they become available
-    to :func:`create_backend`.
-
-    Raises:
-        ValueError: If a backend with *name* is already registered.
-    """
-    if name in _REGISTRY:
-        raise ValueError(f"Storage backend {name!r} is already registered.")
-    _REGISTRY[name] = cls
+# Backends this package can construct. A single entry, named explicitly so
+# create_backend and Config validate against one source of truth and an unknown
+# name fails with a clear message instead of something confusing further down.
+SUPPORTED_BACKENDS: tuple[str, ...] = ("sqlite",)
 
 
-def available_backends() -> list[str]:
-    """Return the names of all registered storage backends."""
-    return sorted(_REGISTRY)
-
-
-def create_backend(backend_type: str = "sqlite", **kwargs: Any) -> StorageBackend:
-    """Instantiate a storage backend by name.
+def create_backend(backend_type: str = "sqlite", **kwargs: Any) -> SQLiteBackend:
+    """Construct a storage backend by name.
 
     Args:
-        backend_type: Registered backend name (default ``"sqlite"``).
-        **kwargs: Backend-specific constructor arguments.
-            - For ``"sqlite"``: ``db_path`` (``Path``) is required.
+        backend_type: Backend name; must be one of :data:`SUPPORTED_BACKENDS`.
+        **kwargs: Backend arguments. ``sqlite`` requires ``db_path``, which may
+            be a :class:`~pathlib.Path` or a string.
 
     Returns:
-        An **uninitialised** :class:`StorageBackend` — call
-        ``await backend.initialize()`` before use.
+        An **uninitialised** backend — call ``await backend.initialize()``
+        before use.
 
     Raises:
-        ConfigError: If *backend_type* is not registered.
-        TypeError: If required constructor arguments are missing.
+        ConfigError: *backend_type* is not a supported backend.
+        TypeError: A required argument is missing.
     """
-    cls = _REGISTRY.get(backend_type)
-    if cls is None:
-        available = ", ".join(available_backends())
+    if backend_type not in SUPPORTED_BACKENDS:
         raise ConfigError(
-            f"Unknown storage backend {backend_type!r}. Available backends: {available}"
+            f"Unknown storage backend {backend_type!r}. "
+            f"Supported backends: {', '.join(SUPPORTED_BACKENDS)}"
         )
 
-    # Backend-specific argument mapping
-    if backend_type == "sqlite":
-        db_path = kwargs.get("db_path")
-        if db_path is None:
-            raise TypeError("SQLite backend requires 'db_path' argument.")
-        if not isinstance(db_path, Path):
-            db_path = Path(db_path)
-        return SQLiteBackend(db_path)
-
-    # Generic fallback — pass all kwargs to the constructor
-    return cls(**kwargs)
+    db_path = kwargs.get("db_path")
+    if db_path is None:
+        raise TypeError("SQLite backend requires 'db_path' argument.")
+    return SQLiteBackend(Path(db_path))
 
 
 __all__ = [
+    "SUPPORTED_BACKENDS",
     "SQLiteBackend",
-    "StorageBackend",
-    "available_backends",
     "create_backend",
-    "register_backend",
 ]

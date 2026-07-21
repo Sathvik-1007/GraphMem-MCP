@@ -15,7 +15,7 @@ actually still use.  (The column keeps its original name because the storage
 backend's eviction query orders by it; it holds "last used", not "created".)
 
 The engine is **storage-agnostic**: it delegates all persistence to a
-:class:`StorageBackend` instance.
+:class:`SQLiteBackend` instance.
 
 Error contract
 --------------
@@ -50,7 +50,7 @@ from graph_mem.utils.errors import DimensionMismatchError, EmbeddingError, Model
 from graph_mem.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from graph_mem.storage.base import StorageBackend
+    from graph_mem.storage import SQLiteBackend
 
 
 class EmbeddingModel(Protocol):
@@ -144,18 +144,18 @@ class EmbeddingEngine:
         self._model: EmbeddingModel | None = None
         self._dimension: int | None = None
         self._available = False
-        self._storage: StorageBackend | None = None
+        self._storage: SQLiteBackend | None = None
         self._model_loaded = False  # True once _ensure_model_loaded() succeeds
         self._stored_dimension: int | None = None  # Cached from DB metadata
         self._stored_model_name: str | None = None  # Model that wrote the stored vectors
         self._batches_since_prune = 0  # Amortises prune_embedding_cache()
         self._load_lock = threading.Lock()  # Guards lazy model loading (thread safety for pre-warm)
 
-    def set_storage(self, storage: StorageBackend) -> None:
+    def set_storage(self, storage: SQLiteBackend) -> None:
         """Store a storage backend reference for use in subsequent calls."""
         self._storage = storage
 
-    def _resolve_storage(self, storage: StorageBackend | None = None) -> StorageBackend:
+    def _resolve_storage(self, storage: SQLiteBackend | None = None) -> SQLiteBackend:
         """Return the explicitly passed storage, or fall back to self._storage."""
         if storage is not None:
             return storage
@@ -290,7 +290,7 @@ class EmbeddingEngine:
                 self._available = False
                 raise EmbeddingError(f"Lazy model load failed: {exc}") from exc
 
-    async def initialize(self, storage: StorageBackend | None = None) -> None:
+    async def initialize(self, storage: SQLiteBackend | None = None) -> None:
         """Prepare the embedding engine for use — fast, no model loading.
 
         Stores the storage reference, reads the previously-stored dimension
@@ -341,10 +341,10 @@ class EmbeddingEngine:
             log.warning("Embedding initialization failed: %s. Semantic search disabled.", exc)
             self._available = False
 
-    async def _write(self, storage: StorageBackend, sql: str, params: tuple[object, ...]) -> None:
+    async def _write(self, storage: SQLiteBackend, sql: str, params: tuple[object, ...]) -> None:
         """Run one batched cache write through the storage SQL escape hatch.
 
-        ``StorageBackend`` only offers single-row cache writes
+        ``SQLiteBackend`` only offers single-row cache writes
         (``set_cached_embedding``), which costs one round trip per vector —
         400 of them around a single batched ``encode()`` for a 200-item batch.
         ``fetch_all`` is the interface's arbitrary-SQL door; the statement
@@ -354,7 +354,7 @@ class EmbeddingEngine:
         """
         await storage.fetch_all(sql, params)
 
-    async def _read_cache(self, storage: StorageBackend, hashes: list[str]) -> dict[str, bytes]:
+    async def _read_cache(self, storage: SQLiteBackend, hashes: list[str]) -> dict[str, bytes]:
         """Look up many cached embeddings — one query per chunk, not per text."""
         found: dict[str, bytes] = {}
         step = _MAX_SQL_VARIABLES - 1  # one variable is taken by model_name
@@ -369,7 +369,7 @@ class EmbeddingEngine:
             found.update({str(r["content_hash"]): bytes(r["embedding"]) for r in rows})
         return found
 
-    async def _touch_cache(self, storage: StorageBackend, hashes: list[str], now: float) -> None:
+    async def _touch_cache(self, storage: SQLiteBackend, hashes: list[str], now: float) -> None:
         """Mark cache hits as used now, which is what makes eviction LRU."""
         step = _MAX_SQL_VARIABLES - 2  # two variables taken by now + model_name
         for start in range(0, len(hashes), step):
@@ -383,7 +383,7 @@ class EmbeddingEngine:
             )
 
     async def _write_cache(
-        self, storage: StorageBackend, rows: list[tuple[str, bytes, str, float]]
+        self, storage: SQLiteBackend, rows: list[tuple[str, bytes, str, float]]
     ) -> None:
         """Store many freshly computed embeddings in one statement per chunk."""
         for start in range(0, len(rows), _CACHE_ROWS_PER_INSERT):
@@ -397,7 +397,7 @@ class EmbeddingEngine:
                 tuple(params),
             )
 
-    async def _maybe_prune(self, storage: StorageBackend) -> None:
+    async def _maybe_prune(self, storage: SQLiteBackend) -> None:
         """Prune the cache every :data:`_PRUNE_EVERY_N_BATCHES` batches."""
         self._batches_since_prune += 1
         if self._batches_since_prune < _PRUNE_EVERY_N_BATCHES:
@@ -406,7 +406,7 @@ class EmbeddingEngine:
         await storage.prune_embedding_cache(self._cache_size)
 
     async def embed(
-        self, texts: list[str], storage: StorageBackend | None = None
+        self, texts: list[str], storage: SQLiteBackend | None = None
     ) -> list[list[float] | None]:
         """Compute embeddings with caching.
 
@@ -500,27 +500,27 @@ class EmbeddingEngine:
         return results
 
     async def upsert_entity_embedding(
-        self, entity_id: str, embedding: list[float], storage: StorageBackend | None = None
+        self, entity_id: str, embedding: list[float], storage: SQLiteBackend | None = None
     ) -> None:
         storage = self._resolve_storage(storage)
         blob = _embedding_to_bytes(embedding)
         await storage.upsert_entity_embedding(entity_id, blob)
 
     async def upsert_observation_embedding(
-        self, obs_id: str, embedding: list[float], storage: StorageBackend | None = None
+        self, obs_id: str, embedding: list[float], storage: SQLiteBackend | None = None
     ) -> None:
         storage = self._resolve_storage(storage)
         blob = _embedding_to_bytes(embedding)
         await storage.upsert_observation_embedding(obs_id, blob)
 
     async def delete_entity_embedding(
-        self, entity_id: str, storage: StorageBackend | None = None
+        self, entity_id: str, storage: SQLiteBackend | None = None
     ) -> None:
         storage = self._resolve_storage(storage)
         await storage.delete_entity_embedding(entity_id)
 
     async def delete_observation_embedding(
-        self, obs_id: str, storage: StorageBackend | None = None
+        self, obs_id: str, storage: SQLiteBackend | None = None
     ) -> None:
         storage = self._resolve_storage(storage)
         await storage.delete_observation_embedding(obs_id)

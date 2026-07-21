@@ -21,12 +21,14 @@ if TYPE_CHECKING:
     from graph_mem.graph.engine import ObservationResult
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
 
 from graph_mem.graph import EntityMerger, GraphEngine, GraphTraversal
 from graph_mem.semantic import EmbeddingEngine, HybridSearch
-from graph_mem.storage import StorageBackend, create_backend
+from graph_mem.storage import SQLiteBackend, create_backend
 from graph_mem.utils import Config, GraphMemError, get_logger, load_config, setup_logging
-from graph_mem.utils.errors import EntityNotFoundError
+from graph_mem.utils.errors import EntityNotFoundError, ValidationError
 
 log = get_logger("server")
 
@@ -51,7 +53,7 @@ class AppState:
     """
 
     config: Config | None = None
-    storage: StorageBackend | None = None
+    storage: SQLiteBackend | None = None
     graph: GraphEngine | None = None
     traversal: GraphTraversal | None = None
     merger: EntityMerger | None = None
@@ -89,7 +91,7 @@ class InitializedState:
     """
 
     config: Config
-    storage: StorageBackend
+    storage: SQLiteBackend
     graph: GraphEngine
     traversal: GraphTraversal
     merger: EntityMerger
@@ -317,6 +319,160 @@ def _error_response(exc: Exception, *, tool_name: str = "") -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Helper: bound every caller-supplied count
+# ---------------------------------------------------------------------------
+# Every tool that accepts a limit, count, depth, or offset routes it through
+# :func:`_clamp_limit` before the value reaches SQL or a traversal.  Two
+# failures make this mandatory rather than tidy:
+#
+#   * SQLite treats a negative LIMIT as *unbounded*, not as empty.  A caller
+#     passing ``limit=-1`` to a search became ``LIMIT -3`` on both the vector
+#     and the FTS5 scan, pulling the entire index into memory.
+#   * The consumer of every response is a language model with a fixed context
+#     window.  A complete answer that does not fit is as useless as an error,
+#     so responses are capped and say when the cap was applied.
+#
+# The ceilings differ by what a single result costs the reader, not by taste.
+# ---------------------------------------------------------------------------
+
+#: Browse/list ceiling.  One row is a compact entity or edge summary, so 500 is
+#: about the largest page still cheap enough to hand to a model in one go.
+#: Matches the bound ``list_entities``/``list_relationships`` already enforced.
+MAX_LIST_LIMIT = 500
+
+#: Search ceiling.  Lower than :data:`MAX_LIST_LIMIT` because each result also
+#: carries nested relationships, and each retrieval channel is asked for
+#: ``limit * CANDIDATE_MULTIPLIER`` (3) candidates — the work behind the
+#: response grows several times faster than the response itself.
+MAX_SEARCH_LIMIT = 100
+
+#: Traversal ceiling for ``find_connections``/``get_subgraph``.  The traversal
+#: layer's own 5000-node budget protects the database; this protects the
+#: context window, where every node is a full entity record plus its path.
+MAX_TRAVERSAL_RESULTS = 200
+
+#: Ceiling on a collection nested inside a single response — the observations
+#: and relationships ``get_entity`` attaches.  ``graph_health`` already flags
+#: an entity with more than 15 observations as a hotspot worth compacting, so
+#: 50 is generous for the normal case and still bounded for the pathological
+#: one.  Use ``search_observations`` scoped by ``entity_name`` to see the rest.
+MAX_NESTED_ITEMS = 50
+
+#: Pagination ceiling.  Past a million rows, OFFSET paging is the wrong tool
+#: (SQLite still walks every skipped row); the bound exists so a garbage offset
+#: cannot turn one call into a full table scan.
+MAX_OFFSET = 1_000_000
+
+
+def _clamp_limit(value: int, *, maximum: int, minimum: int = 1) -> int:
+    """Constrain a caller-supplied count to ``[minimum, maximum]``.
+
+    Negatives and zero are raised to *minimum*, never passed through: a
+    negative SQL ``LIMIT`` means "no limit" in SQLite, which is the opposite of
+    what a caller asking for ``-1`` results could possibly want.
+
+    Args:
+        value: The count the caller supplied.
+        maximum: Hard ceiling for this tool — one of the ``MAX_*`` constants.
+        minimum: Floor, 1 for limits and 0 for offsets.
+
+    Raises:
+        ValidationError: *value* is not an integer.  Returning a default
+            instead would silently answer a different question.
+    """
+    if not isinstance(value, int):
+        raise ValidationError(
+            f"Invalid input: expected an integer count, got {type(value).__name__}"
+        )
+    return max(minimum, min(value, maximum))
+
+
+# ---------------------------------------------------------------------------
+# Helper: validate caller-supplied input at the tool boundary
+# ---------------------------------------------------------------------------
+# A tool argument is a trust boundary: it comes from a language model that
+# guesses key names and types.  Constructing a domain model straight from it
+# turns ``{"name": null}`` into an ``AttributeError`` inside
+# ``Entity.__post_init__``, which escapes the tool as an unstructured framework
+# error the caller cannot act on.  These helpers coerce and reject *before* any
+# domain object is built, and name the offending field when they refuse.
+# ---------------------------------------------------------------------------
+
+_ItemModel = TypeVar("_ItemModel", bound=BaseModel)
+
+
+def _validate_items(items: Any, model: type[_ItemModel], *, field: str) -> list[_ItemModel]:
+    """Validate a list of caller-supplied item dicts into *model* instances.
+
+    Accepts either raw dicts (in-process callers) or already-parsed *model*
+    instances (the MCP runtime parses them from the tool's JSON schema).
+
+    Args:
+        items: The list the caller supplied.
+        model: Per-item pydantic model describing the accepted shape.
+        field: Parameter name, used to build the error message.
+
+    Raises:
+        ValidationError: *items* is not a list, or an item is malformed.  The
+            message names the index and the offending field.
+    """
+    if not isinstance(items, list):
+        raise ValidationError(
+            f"Invalid input: '{field}' must be a list of objects, got {type(items).__name__}"
+        )
+    validated: list[_ItemModel] = []
+    for index, item in enumerate(items):
+        try:
+            validated.append(model.model_validate(item))
+        except PydanticValidationError as exc:
+            first = exc.errors()[0]
+            location = ".".join(str(part) for part in first["loc"]) or "<item>"
+            raise ValidationError(
+                f"Invalid input: {field}[{index}].{location}: {first['msg']}"
+            ) from exc
+    return validated
+
+
+def _require_text(value: Any, field: str, *, allow_empty: bool = False) -> str:
+    """Return *value* as a stripped string, or raise naming *field*.
+
+    Args:
+        value: The caller-supplied value.
+        field: Parameter name, used to build the error message.
+        allow_empty: Whether an empty/whitespace string is acceptable.  True
+            for free-text queries, False for anything that has to name a row.
+
+    Raises:
+        ValidationError: *value* is not a string, or is empty when it may not be.
+    """
+    if not isinstance(value, str):
+        raise ValidationError(
+            f"Invalid input: '{field}' must be a string, got {type(value).__name__}"
+        )
+    text = value.strip()
+    if not text and not allow_empty:
+        raise ValidationError(f"Invalid input: '{field}' must not be empty")
+    return text
+
+
+def _require_text_list(value: Any, field: str, *, allow_empty_items: bool = False) -> list[str]:
+    """Return *value* as a list of stripped strings, or raise naming *field*.
+
+    Raises:
+        ValidationError: *value* is not a list, or an element is not a usable
+            string.  The message names the offending index.
+    """
+    if not isinstance(value, list):
+        raise ValidationError(
+            f"Invalid input: '{field}' must be a list of strings, got {type(value).__name__}"
+        )
+    return [
+        _require_text(item, f"{field}[{index}]", allow_empty=allow_empty_items)
+        for index, item in enumerate(value)
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Helper: compute and store embeddings for entities / observations
 # ---------------------------------------------------------------------------
 # These live at the server layer (rather than in graph or semantic) because
@@ -356,20 +512,29 @@ async def _embed_entities(entity_ids: list[str]) -> None:
             await state.embeddings.upsert_entity_embedding(eid, vec)
 
 
+async def _embed_observation_texts(observations: list[tuple[str, str]]) -> None:
+    """Compute and upsert embeddings for ``(observation_id, content)`` pairs.
+
+    Takes only the two fields embedding actually needs, so a caller that has
+    just an ID and a new body — ``update_observation`` — does not have to
+    invent the rest of an :class:`ObservationResult` to call it.
+
+    Silently skips if the embedding engine is not available.
+    """
+    state = _require_state()
+
+    if not state.embeddings.available or not observations:
+        return
+
+    vectors = await state.embeddings.embed([content for _, content in observations])
+    for (oid, _content), vec in zip(observations, vectors, strict=True):
+        if vec is not None:
+            await state.embeddings.upsert_observation_embedding(oid, vec)
+
+
 async def _embed_observations(obs_results: list[ObservationResult]) -> None:
     """Compute and upsert embeddings for newly created observations.
 
     Each element of *obs_results* must have ``id`` and ``content`` keys.
     """
-    state = _require_state()
-
-    if not state.embeddings.available or not obs_results:
-        return
-
-    texts = [str(o["content"]) for o in obs_results]
-    ids = [str(o["id"]) for o in obs_results]
-
-    vectors = await state.embeddings.embed(texts)
-    for oid, vec in zip(ids, vectors, strict=True):
-        if vec is not None:
-            await state.embeddings.upsert_observation_embedding(oid, vec)
+    await _embed_observation_texts([(str(o["id"]), str(o["content"])) for o in obs_results])

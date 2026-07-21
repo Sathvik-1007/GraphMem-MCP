@@ -13,11 +13,27 @@ from graph_mem.models import Observation
 from graph_mem.utils import GraphMemError
 
 from ._core import (
+    MAX_SEARCH_LIMIT,
+    _clamp_limit,
     _embed_observations,
     _error_response,
     _require_state,
+    _require_text,
+    _require_text_list,
     tool,
 )
+
+#: How many entities one ``audit_graph`` run inspects.  The audit reads every
+#: entity row into memory to cross-check it against four separate checks, so it
+#: is the one tool whose cost grows with the whole graph rather than with the
+#: caller's request.  2000 entities is roughly four times the size at which
+#: ``graph_health`` already starts advising the user to prune, and the response
+#: says when the scan was cut short.
+AUDIT_ENTITY_SCAN_LIMIT = 2000
+
+#: How many entity names each audit category lists by name.  The counts are
+#: always exact; only the enumeration is trimmed.
+AUDIT_NAMES_PER_CATEGORY = 30
 
 
 class _Hotspot(TypedDict):
@@ -34,14 +50,14 @@ class _Hotspot(TypedDict):
 
 @tool()
 async def graph_health() -> dict[str, Any]:
-    """Get maintenance-oriented health stats for the knowledge graph.
+    """Ask "does this graph need cleaning?" — returns maintenance signals and a
+    short list of suggested actions, at fixed cost regardless of graph size.
 
-    Returns entity/relationship/observation counts, top observation hotspots
-    (entities with the most observations), entities missing descriptions,
-    entity type distribution (top 10), and suggested maintenance actions.
-
-    Use this at session start or periodically to decide whether cleanup,
-    compaction, or pruning is needed.
+    Sits between the other two overview tools: read_graph describes the graph's
+    shape and says nothing about quality; audit_graph names every problem
+    entity and scans the whole graph to do it. This one reports counts, the top
+    5 observation hotspots, up to 10 entities missing descriptions, the top 10
+    entity types, and what to do about them.
     """
     try:
         state = _require_state()
@@ -153,10 +169,14 @@ async def compact_observations(
     Args:
         entity_name: Name of the entity to compact.
         keep_ids: Observation IDs to preserve unchanged. All others are deleted.
+            Duplicates are counted once.
         new_observations: New observation texts to add (your merged summaries).
     """
     try:
         state = _require_state()
+        entity_name = _require_text(entity_name, "entity_name")
+        keep_ids = _require_text_list(keep_ids, "keep_ids")
+        new_observations = _require_text_list(new_observations, "new_observations")
 
         # Resolve entity and get current observations
         entity = await state.graph.resolve_entity(entity_name)
@@ -195,18 +215,24 @@ async def compact_observations(
             if new_observations:
                 obs_objs = [Observation.pending(text) for text in new_observations]
                 added_results = await state.graph.add_observations(entity_name, obs_objs)
-                await _embed_observations(added_results)
 
-        # Final count
-        remaining = len(keep_ids) + len(added_results)
+        # Embed after the transaction commits.  A cold embedding model takes
+        # 30+ seconds to load, and holding a write transaction for that long
+        # blocks every other tool call.  The rows are already durable; a failure
+        # here costs the new observations their vectors, not their existence.
+        if added_results:
+            await _embed_observations(added_results)
+
+        # keep_ids may repeat an ID; the observation is still kept only once.
+        kept_count = len(keep_set)
 
         return {
             "entity_name": entity_name,
             "before": len(current_obs),
             "deleted": deleted_count,
-            "kept": len(keep_ids),
+            "kept": kept_count,
             "added": len(added_results),
-            "after": remaining,
+            "after": kept_count + len(added_results),
             "status": "compacted",
         }
 
@@ -228,10 +254,12 @@ async def suggest_connections(
 
     Args:
         entity_name: Name of the entity to find connections for.
-        limit: Max suggestions to return (default 10).
+        limit: Max suggestions to return (default 10, clamped to 1-100).
     """
     try:
         state = _require_state()
+        entity_name = _require_text(entity_name, "entity_name")
+        limit = _clamp_limit(limit, maximum=MAX_SEARCH_LIMIT)
 
         # Resolve the entity
         entity = await state.graph.resolve_entity(entity_name)
@@ -251,9 +279,6 @@ async def suggest_connections(
         for rel in existing_rels:
             connected_names.add(str(rel.get("source_name", "")))
             connected_names.add(str(rel.get("target_name", "")))
-            # Also handle the flat format from get_relationships
-            connected_names.add(str(rel.get("source", "")))
-            connected_names.add(str(rel.get("target", "")))
         connected_names.discard("")
         connected_names.discard(entity_name)
 
@@ -299,56 +324,68 @@ async def suggest_connections(
 
 
 @tool()
-async def audit_graph() -> str:
-    """Screen the entire knowledge graph for quality issues. Returns a categorized
-    plain-text report — not JSON — so any LLM can read it directly.
+async def audit_graph() -> dict[str, Any]:
+    """Name every entity with a data-quality problem — the thorough, expensive
+    check to run after a bulk import or before a cleanup pass.
 
-    Checks every entity for: missing relationships (disconnected nodes),
-    missing descriptions, missing observations, empty properties.
-    Groups findings by category with counts and entity names for fast action.
+    Unlike read_graph (shape only) and graph_health (fixed-cost signals plus
+    advice), this scans up to 2000 entities and lists the offenders in five
+    categories: disconnected, missing description, missing observations, empty
+    properties, and only-one-relationship.
 
-    Call this after bulk imports or periodically to catch data quality gaps.
+    Returns a dict; ``report`` holds the same findings rendered as plain text
+    for direct reading, and ``truncated`` says whether the graph outgrew the
+    scan limit.
     """
     try:
         state = _require_state()
         storage = state.storage
 
-        # ── Gather all entities ──────────────────────────────────────────
-        all_entities = await storage.fetch_all(
-            "SELECT id, name, entity_type, description, properties FROM entities "
-            "ORDER BY entity_type, name",
+        entity_total = await storage.count_entities()
+        rel_total = await storage.count_relationships()
+        obs_total = await storage.count_observations()
+
+        # One bounded pass carries every per-entity number the audit needs.
+        # It replaces three unbounded scans: the entity list, a DISTINCT scan
+        # of relationship endpoints, and a GROUP BY of relationships per
+        # entity.  The last two answered the same question twice — "is this
+        # entity connected" is just "is its edge count zero".
+        rows = await storage.fetch_all(
+            """
+            SELECT e.id, e.name, e.entity_type, e.description, e.properties,
+                   (SELECT COUNT(*) FROM relationships r
+                     WHERE r.source_id = e.id OR r.target_id = e.id) AS rel_count,
+                   (SELECT COUNT(*) FROM observations o
+                     WHERE o.entity_id = e.id) AS obs_count
+            FROM entities e
+            ORDER BY e.entity_type, e.name
+            LIMIT ?
+            """,
+            (AUDIT_ENTITY_SCAN_LIMIT,),
         )
-        if not all_entities:
-            return "AUDIT: Graph is empty — no entities to audit."
 
-        entity_count = len(all_entities)
+        counts = {"entities": entity_total, "relationships": rel_total, "observations": obs_total}
+        if not rows:
+            return {
+                "report": "AUDIT: Graph is empty — no entities to audit.",
+                "counts": counts,
+                "scanned_entities": 0,
+                "truncated": False,
+                "quality_score": 100.0,
+                "issues": {},
+                "actions": [],
+            }
 
-        # ── Disconnected entities (0 relationships) ──────────────────────
-        connected_ids: set[str] = set()
-        rel_rows = await storage.fetch_all(
-            "SELECT DISTINCT source_id, target_id FROM relationships",
-        )
-        for r in rel_rows:
-            connected_ids.add(str(r["source_id"]))
-            connected_ids.add(str(r["target_id"]))
+        scanned = len(rows)
+        truncated = entity_total > scanned
 
-        disconnected = [e for e in all_entities if str(e["id"]) not in connected_ids]
+        # ── Categories ───────────────────────────────────────────────────
+        disconnected = [e for e in rows if int(e["rel_count"]) == 0]
+        no_desc = [e for e in rows if not e["description"] or not str(e["description"]).strip()]
+        no_obs = [e for e in rows if int(e["obs_count"]) == 0]
 
-        # ── Missing descriptions ─────────────────────────────────────────
-        no_desc = [
-            e for e in all_entities if not e["description"] or str(e["description"]).strip() == ""
-        ]
-
-        # ── Missing observations ─────────────────────────────────────────
-        obs_counts_rows = await storage.fetch_all(
-            "SELECT entity_id, COUNT(*) AS cnt FROM observations GROUP BY entity_id",
-        )
-        obs_counts = {str(r["entity_id"]): int(r["cnt"]) for r in obs_counts_rows}
-        no_obs = [e for e in all_entities if str(e["id"]) not in obs_counts]
-
-        # ── Empty properties ─────────────────────────────────────────────
         no_props = []
-        for e in all_entities:
+        for e in rows:
             props_raw = e.get("properties", "{}")
             try:
                 props = _json.loads(props_raw) if isinstance(props_raw, str) else props_raw
@@ -357,24 +394,7 @@ async def audit_graph() -> str:
             if not props:
                 no_props.append(e)
 
-        # ── Relationship counts per entity ───────────────────────────────
-        rel_count_rows = await storage.fetch_all(
-            """
-            SELECT e.id, e.name, e.entity_type,
-                   COUNT(DISTINCT r.id) AS rel_count
-            FROM entities e
-            LEFT JOIN relationships r ON r.source_id = e.id OR r.target_id = e.id
-            GROUP BY e.id
-            ORDER BY rel_count ASC
-            """,
-        )
-
-        # ── Relationship counts ──────────────────────────────────────────
-        rel_count_row = await storage.fetch_one(
-            "SELECT COUNT(*) AS cnt FROM relationships",
-        )
-        total_rels = int(rel_count_row["cnt"]) if rel_count_row else 0
-        total_obs = sum(obs_counts.values())
+        low_conn = [e for e in rows if int(e["rel_count"]) == 1]
 
         # ── Build plain-text report ──────────────────────────────────────
         lines: list[str] = []
@@ -382,110 +402,106 @@ async def audit_graph() -> str:
         lines.append("GRAPH AUDIT REPORT")
         lines.append("=" * 60)
         lines.append("")
-        lines.append(f"Entities: {entity_count}")
-        lines.append(f"Relationships: {total_rels}")
-        lines.append(f"Observations: {total_obs}")
+        lines.append(f"Entities: {entity_total}")
+        lines.append(f"Relationships: {rel_total}")
+        lines.append(f"Observations: {obs_total}")
+        if truncated:
+            lines.append(f"NOTE: audited the first {scanned} entities of {entity_total}.")
         lines.append("")
 
         # Score
         issues_total = len(disconnected) + len(no_desc) + len(no_obs) + len(no_props)
-        max_issues = entity_count * 4  # 4 checks per entity
-        quality_pct = round(100 * (1 - issues_total / max_issues), 1) if max_issues > 0 else 100
+        max_issues = scanned * 4  # 4 checks per entity
+        quality_pct = round(100 * (1 - issues_total / max_issues), 1) if max_issues > 0 else 100.0
         lines.append(
-            f"Quality Score: {quality_pct}% ({issues_total} issues across {entity_count} entities)"
+            f"Quality Score: {quality_pct}% ({issues_total} issues across {scanned} entities)"
         )
         lines.append("")
 
-        # ── Category: Disconnected ───────────────────────────────────────
-        lines.append("-" * 60)
-        lines.append(f"DISCONNECTED ENTITIES ({len(disconnected)}/{entity_count})")
-        lines.append("  Entities with zero relationships — isolated nodes.")
-        if disconnected:
-            for e in disconnected[:30]:
-                lines.append(f"  - {e['name']} [{e['entity_type']}]")
-            if len(disconnected) > 30:
-                lines.append(f"  ... and {len(disconnected) - 30} more")
-        else:
-            lines.append("  None — all entities are connected.")
-        lines.append("")
+        def section(title: str, offenders: list[dict[str, Any]], blurb: str, clean: str) -> None:
+            """Append one category block: header, explanation, capped name list."""
+            lines.append("-" * 60)
+            lines.append(f"{title} ({len(offenders)}/{scanned})")
+            lines.append(f"  {blurb}")
+            if offenders:
+                for e in offenders[:AUDIT_NAMES_PER_CATEGORY]:
+                    lines.append(f"  - {e['name']} [{e['entity_type']}]")
+                if len(offenders) > AUDIT_NAMES_PER_CATEGORY:
+                    lines.append(f"  ... and {len(offenders) - AUDIT_NAMES_PER_CATEGORY} more")
+            else:
+                lines.append(f"  {clean}")
+            lines.append("")
 
-        # ── Category: Missing Descriptions ───────────────────────────────
-        lines.append("-" * 60)
-        lines.append(f"MISSING DESCRIPTIONS ({len(no_desc)}/{entity_count})")
-        lines.append("  Entities with empty or missing description field.")
-        if no_desc:
-            for e in no_desc[:30]:
-                lines.append(f"  - {e['name']} [{e['entity_type']}]")
-            if len(no_desc) > 30:
-                lines.append(f"  ... and {len(no_desc) - 30} more")
-        else:
-            lines.append("  None — all entities have descriptions.")
-        lines.append("")
-
-        # ── Category: Missing Observations ───────────────────────────────
-        lines.append("-" * 60)
-        lines.append(f"MISSING OBSERVATIONS ({len(no_obs)}/{entity_count})")
-        lines.append("  Entities with zero observations — no factual detail stored.")
-        if no_obs:
-            for e in no_obs[:30]:
-                lines.append(f"  - {e['name']} [{e['entity_type']}]")
-            if len(no_obs) > 30:
-                lines.append(f"  ... and {len(no_obs) - 30} more")
-        else:
-            lines.append("  None — all entities have observations.")
-        lines.append("")
-
-        # ── Category: Empty Properties ───────────────────────────────────
-        lines.append("-" * 60)
-        lines.append(f"EMPTY PROPERTIES ({len(no_props)}/{entity_count})")
-        lines.append("  Entities with no key-value properties set.")
-        if no_props:
-            for e in no_props[:30]:
-                lines.append(f"  - {e['name']} [{e['entity_type']}]")
-            if len(no_props) > 30:
-                lines.append(f"  ... and {len(no_props) - 30} more")
-        else:
-            lines.append("  None — all entities have properties.")
-        lines.append("")
-
-        # ── Category: Low-Connection Entities ────────────────────────────
-        low_conn = [
-            r for r in rel_count_rows if int(r["rel_count"]) == 1 and str(r["id"]) in connected_ids
-        ]
-        lines.append("-" * 60)
-        lines.append(f"LOW-CONNECTION ENTITIES ({len(low_conn)})")
-        lines.append("  Connected entities with only 1 relationship — weakly linked.")
-        if low_conn:
-            for r in low_conn[:30]:
-                lines.append(f"  - {r['name']} [{r['entity_type']}] (1 rel)")
-            if len(low_conn) > 30:
-                lines.append(f"  ... and {len(low_conn) - 30} more")
-        else:
-            lines.append("  None — all connected entities have 2+ relationships.")
-        lines.append("")
+        section(
+            "DISCONNECTED ENTITIES",
+            disconnected,
+            "Entities with zero relationships — isolated nodes.",
+            "None — all entities are connected.",
+        )
+        section(
+            "MISSING DESCRIPTIONS",
+            no_desc,
+            "Entities with empty or missing description field.",
+            "None — all entities have descriptions.",
+        )
+        section(
+            "MISSING OBSERVATIONS",
+            no_obs,
+            "Entities with zero observations — no factual detail stored.",
+            "None — all entities have observations.",
+        )
+        section(
+            "EMPTY PROPERTIES",
+            no_props,
+            "Entities with no key-value properties set.",
+            "None — all entities have properties.",
+        )
+        section(
+            "LOW-CONNECTION ENTITIES",
+            low_conn,
+            "Connected entities with only 1 relationship — weakly linked.",
+            "None — all connected entities have 2+ relationships.",
+        )
 
         # ── Summary ──────────────────────────────────────────────────────
+        actions: list[str] = []
+        if disconnected:
+            actions.append(f"Connect {len(disconnected)} isolated entities with add_relationships")
+        if no_desc:
+            actions.append(f"Add descriptions to {len(no_desc)} entities with update_entity")
+        if no_obs:
+            actions.append(f"Add observations to {len(no_obs)} entities with add_observations")
+        if no_props:
+            actions.append(f"Add properties to {len(no_props)} entities with update_entity")
+        if low_conn:
+            actions.append(
+                f"Strengthen {len(low_conn)} weakly-linked entities with more relationships"
+            )
+
         lines.append("=" * 60)
         lines.append("ACTIONS")
-        if disconnected:
-            lines.append(
-                f"  1. Connect {len(disconnected)} isolated entities with add_relationships"
-            )
-        if no_desc:
-            lines.append(f"  2. Add descriptions to {len(no_desc)} entities with update_entity")
-        if no_obs:
-            lines.append(f"  3. Add observations to {len(no_obs)} entities with add_observations")
-        if no_props:
-            lines.append(f"  4. Add properties to {len(no_props)} entities with update_entity")
-        if low_conn:
-            lines.append(
-                f"  5. Strengthen {len(low_conn)} weakly-linked entities with more relationships"
-            )
-        if not (disconnected or no_desc or no_obs or no_props or low_conn):
+        if actions:
+            for number, action in enumerate(actions, start=1):
+                lines.append(f"  {number}. {action}")
+        else:
             lines.append("  Graph looks clean — no issues found.")
         lines.append("=" * 60)
 
-        return "\n".join(lines)
+        return {
+            "report": "\n".join(lines),
+            "counts": counts,
+            "scanned_entities": scanned,
+            "truncated": truncated,
+            "quality_score": quality_pct,
+            "issues": {
+                "disconnected": len(disconnected),
+                "missing_descriptions": len(no_desc),
+                "missing_observations": len(no_obs),
+                "empty_properties": len(no_props),
+                "low_connection": len(low_conn),
+            },
+            "actions": actions,
+        }
 
     except GraphMemError as exc:
-        return f"AUDIT ERROR: {exc}"
+        return _error_response(exc, tool_name="audit_graph")

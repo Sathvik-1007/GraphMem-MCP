@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
 if TYPE_CHECKING:
     from graph_mem.graph.engine import ObservationResult
 
@@ -12,17 +14,45 @@ from graph_mem.utils import GraphMemError
 from graph_mem.utils.errors import EntityNotFoundError
 
 from ._core import (
+    MAX_LIST_LIMIT,
+    MAX_NESTED_ITEMS,
+    MAX_OFFSET,
+    _clamp_limit,
     _embed_entities,
     _embed_observations,
     _error_response,
     _require_state,
+    _require_text,
+    _require_text_list,
+    _validate_items,
     log,
     tool,
 )
 
 
+class EntityInput(BaseModel):
+    """One entity for :func:`add_entities`.
+
+    Declared as a model rather than a bare ``dict`` so the tool's JSON schema
+    names the keys and their types.  Without it the client sees only
+    ``{"type": "object"}`` and the calling model has to guess.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="Entity name, e.g. 'Ada Lovelace'.")
+    entity_type: str = Field(description="Category, e.g. 'person', 'concept', 'place'.")
+    description: str = Field(default="", description="Prose description; improves search.")
+    properties: dict[str, Any] = Field(
+        default_factory=dict, description="Arbitrary key-value metadata."
+    )
+    observations: list[str] = Field(
+        default_factory=list, description="Atomic facts to attach to this entity."
+    )
+
+
 @tool()
-async def add_entities(entities: list[dict[str, Any]]) -> dict[str, Any]:
+async def add_entities(entities: list[EntityInput]) -> dict[str, Any]:
     """Add entities to the knowledge graph. Entities with the same name and type are
     automatically merged.
 
@@ -34,26 +64,25 @@ async def add_entities(entities: list[dict[str, Any]]) -> dict[str, Any]:
     try:
         state = _require_state()
 
+        # Validate and coerce before constructing any domain object: a null or
+        # wrong-typed field must produce a structured error naming the field,
+        # not an AttributeError from inside Entity.__post_init__.
+        items = _validate_items(entities, EntityInput, field="entities")
+
         # Build Entity objects
         entity_objs: list[Entity] = []
         obs_by_index: list[tuple[int, list[str]]] = []  # (index, obs_texts)
-        for idx, raw in enumerate(entities):
-            name: str = raw["name"]
-            entity_type: str = raw["entity_type"]
-            description: str = raw.get("description", "")
-            properties: dict[str, object] = raw.get("properties", {})
-            observations: list[str] = raw.get("observations", [])
-
+        for idx, item in enumerate(items):
             entity = Entity(
-                name=name,
-                entity_type=entity_type,
-                description=description,
-                properties=properties,
+                name=item.name,
+                entity_type=item.entity_type,
+                description=item.description,
+                properties=dict(item.properties),
             )
             entity_objs.append(entity)
 
-            if observations:
-                obs_by_index.append((idx, observations))
+            if item.observations:
+                obs_by_index.append((idx, item.observations))
 
         # Persist entities (single transaction inside engine)
         results = await state.graph.add_entities(entity_objs)
@@ -79,11 +108,11 @@ async def add_entities(entities: list[dict[str, Any]]) -> dict[str, Any]:
         screening: dict[str, list[str]] = {}
         no_description: list[str] = []
         no_observations: list[str] = []
-        for idx, raw in enumerate(entities):
+        for idx, item in enumerate(items):
             ename = str(results[idx]["name"])
-            if not raw.get("description", "").strip():
+            if not item.description.strip():
                 no_description.append(ename)
-            if not raw.get("observations"):
+            if not item.observations:
                 no_observations.append(ename)
         if no_description:
             screening["missing_description"] = no_description
@@ -119,6 +148,7 @@ async def update_entity(
     """
     try:
         state = _require_state()
+        name = _require_text(name, "name")
 
         updated = await state.graph.update_entity(
             name,
@@ -149,6 +179,7 @@ async def delete_entities(names: list[str]) -> dict[str, Any]:
     """
     try:
         state = _require_state()
+        names = _require_text_list(names, "names")
 
         # Resolve entity IDs AND observation IDs before deletion for embedding cleanup.
         # Vec tables don't support CASCADE, so observation embeddings must be
@@ -206,6 +237,8 @@ async def merge_entities(
     """
     try:
         state = _require_state()
+        target = _require_text(target, "target")
+        source = _require_text(source, "source")
 
         target_entity = await state.graph.resolve_entity(target)
         source_entity = await state.graph.resolve_entity(source)
@@ -238,18 +271,32 @@ async def get_entity(name: str) -> dict[str, Any]:
     """Get full details of a single entity by name, including observations and relationships.
 
     Uses fuzzy name resolution: exact match -> case-insensitive -> FTS5 suggestions.
-    Returns the entity with all its observations and direct relationships.
+    At most 50 observations (newest first) and 50 relationships are attached;
+    ``observations_truncated`` / ``relationships_truncated`` say when more exist,
+    and ``observation_count`` / ``relationship_count`` give the true totals.
+    Use search_observations scoped by entity_name to reach the rest.
     """
     try:
         state = _require_state()
+        name = _require_text(name, "name")
 
         entity = await state.graph.get_entity(name)
-        observations = await state.graph.get_observations(name)
+        # A hot entity can carry thousands of observations, and every one would
+        # land in the caller's context window. The cap is applied in SQL rather
+        # than by slicing afterwards, so the rows are never read either; the
+        # true total comes from a separate COUNT so the caller still learns how
+        # much it is not seeing.
+        observations = await state.graph.get_observations(name, limit=MAX_NESTED_ITEMS)
+        observation_count = await state.graph.count_observations(name)
         relationships = await state.graph.get_relationships(name)
 
         result = entity.to_dict()
         result["observations"] = [obs.to_dict() for obs in observations]
-        result["relationships"] = relationships
+        result["observation_count"] = observation_count
+        result["observations_truncated"] = observation_count > len(observations)
+        result["relationships"] = relationships[:MAX_NESTED_ITEMS]
+        result["relationship_count"] = len(relationships)
+        result["relationships_truncated"] = len(relationships) > MAX_NESTED_ITEMS
 
         return result
 
@@ -271,8 +318,8 @@ async def list_entities(
 
     Args:
         entity_type: Optional — filter to only this entity type (e.g. 'person').
-        limit: Maximum entities to return (default 50, max 500).
-        offset: Skip this many entities for pagination (default 0).
+        limit: Maximum entities to return (default 50, clamped to 1-500).
+        offset: Skip this many entities for pagination (default 0, max 1000000).
 
     Returns:
         Matching entities with their summaries and total count.
@@ -280,9 +327,10 @@ async def list_entities(
     try:
         state = _require_state()
 
-        # Clamp limit to prevent excessive queries
-        limit = min(max(1, limit), 500)
-        offset = max(0, offset)
+        limit = _clamp_limit(limit, maximum=MAX_LIST_LIMIT)
+        offset = _clamp_limit(offset, maximum=MAX_OFFSET, minimum=0)
+        if entity_type is not None:
+            entity_type = _require_text(entity_type, "entity_type")
 
         entities = await state.graph.list_entities(
             entity_type=entity_type,

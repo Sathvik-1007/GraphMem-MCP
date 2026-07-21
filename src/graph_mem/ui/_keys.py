@@ -16,9 +16,9 @@ if TYPE_CHECKING:
 
     from graph_mem.graph.engine import GraphEngine
     from graph_mem.semantic import HybridSearch
-    from graph_mem.storage.base import StorageBackend
+    from graph_mem.storage import SQLiteBackend
 
-storage_key: web.AppKey[StorageBackend] = web.AppKey("storage")
+storage_key: web.AppKey[SQLiteBackend] = web.AppKey("storage")
 search_key: web.AppKey[HybridSearch] = web.AppKey("search")
 graph_key: web.AppKey[GraphEngine] = web.AppKey("graph")
 db_path_key: web.AppKey[str] = web.AppKey("db_path")

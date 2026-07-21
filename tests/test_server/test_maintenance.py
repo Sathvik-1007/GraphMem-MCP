@@ -14,6 +14,7 @@ from graph_mem.server import (
     graph_health,
     suggest_connections,
 )
+from graph_mem.utils import GraphMemError
 
 # ===========================================================================
 # graph_health
@@ -326,10 +327,11 @@ class TestSuggestConnections:
 
 @pytest.mark.asyncio
 async def test_audit_graph_empty(setup_server):
-    """Audit on empty graph returns the empty message."""
+    """Audit on empty graph returns a dict whose report says so."""
     result = await audit_graph()
-    assert isinstance(result, str)
-    assert "empty" in result.lower()
+    assert isinstance(result, dict)
+    assert "empty" in result["report"].lower()
+    assert result["counts"]["entities"] == 0
 
 
 @pytest.mark.asyncio
@@ -342,11 +344,12 @@ async def test_audit_graph_finds_disconnected(setup_server):
         ]
     )
     result = await audit_graph()
-    assert isinstance(result, str)
-    assert "DISCONNECTED" in result
-    assert "Lonely" in result
-    assert "Also Lonely" in result
-    assert "2/2" in result  # both disconnected
+    report = result["report"]
+    assert "DISCONNECTED" in report
+    assert "Lonely" in report
+    assert "Also Lonely" in report
+    assert "2/2" in report  # both disconnected
+    assert result["issues"]["disconnected"] == 2
 
 
 @pytest.mark.asyncio
@@ -359,8 +362,9 @@ async def test_audit_graph_finds_missing_descriptions(setup_server):
         ]
     )
     result = await audit_graph()
-    assert "MISSING DESCRIPTIONS" in result
-    assert "NoDesc" in result
+    assert "MISSING DESCRIPTIONS" in result["report"]
+    assert "NoDesc" in result["report"]
+    assert result["issues"]["missing_descriptions"] == 1
 
 
 @pytest.mark.asyncio
@@ -373,8 +377,9 @@ async def test_audit_graph_finds_missing_observations(setup_server):
         ]
     )
     result = await audit_graph()
-    assert "MISSING OBSERVATIONS" in result
-    assert "NoObs" in result
+    assert "MISSING OBSERVATIONS" in result["report"]
+    assert "NoObs" in result["report"]
+    assert result["issues"]["missing_observations"] == 1
 
 
 @pytest.mark.asyncio
@@ -392,12 +397,15 @@ async def test_audit_graph_connected_entities_not_disconnected(setup_server):
         ]
     )
     result = await audit_graph()
-    assert "DISCONNECTED ENTITIES (0/" in result
+    assert "DISCONNECTED ENTITIES (0/" in result["report"]
+    assert result["issues"]["disconnected"] == 0
+    # Both have exactly one edge, so both are weakly linked.
+    assert result["issues"]["low_connection"] == 2
 
 
 @pytest.mark.asyncio
 async def test_audit_graph_quality_score(setup_server):
-    """Quality score present and is a percentage."""
+    """Quality score present in both the dict and the rendered report."""
     await add_entities(
         [
             {
@@ -410,17 +418,37 @@ async def test_audit_graph_quality_score(setup_server):
         ]
     )
     result = await audit_graph()
-    assert "Quality Score:" in result
-    assert "%" in result
+    assert "Quality Score:" in result["report"]
+    assert isinstance(result["quality_score"], float)
+    # Only the missing relationship counts against it: 3 of 4 checks pass.
+    assert result["quality_score"] == 75.0
 
 
 @pytest.mark.asyncio
-async def test_audit_graph_returns_string_not_dict(setup_server):
-    """Audit must return plain text, never a dict."""
+async def test_audit_graph_returns_dict_like_every_other_tool(setup_server):
+    """Audit returns a dict, so a caller can tell success from failure."""
     await add_entities([{"name": "X", "entity_type": "t"}])
     result = await audit_graph()
-    assert isinstance(result, str)
-    assert not isinstance(result, dict)
+    assert isinstance(result, dict)
+    assert "error" not in result
+    assert set(result) >= {"report", "counts", "issues", "truncated", "quality_score"}
+
+
+@pytest.mark.asyncio
+async def test_audit_graph_error_is_structured(setup_server, monkeypatch):
+    """A failure returns the standard error dict, not a string starting AUDIT ERROR."""
+    import graph_mem.tools._core as core
+
+    async def boom(*args, **kwargs):
+        raise GraphMemError("storage exploded")
+
+    assert core._state.storage is not None
+    monkeypatch.setattr(core._state.storage, "count_entities", boom)
+
+    result = await audit_graph()
+    assert result["error"] is True
+    assert result["error_type"] == "GraphMemError"
+    assert "storage exploded" in result["message"]
 
 
 # ---------------------------------------------------------------------------

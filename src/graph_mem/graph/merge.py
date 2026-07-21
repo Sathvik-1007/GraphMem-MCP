@@ -8,7 +8,7 @@ When entities are discovered to be duplicates, merge them:
 5. Delete source entity
 6. All within a single transaction
 
-The merger accepts a :class:`StorageBackend` and delegates all
+The merger accepts a :class:`SQLiteBackend` and delegates all
 persistence to it, making it compatible with any backend.
 """
 
@@ -22,7 +22,7 @@ from graph_mem.utils.errors import EntityError
 from graph_mem.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from graph_mem.storage.base import StorageBackend
+    from graph_mem.storage import SQLiteBackend
 
 log = get_logger("graph.merge")
 
@@ -61,7 +61,7 @@ class MergeResult(TypedDict):
 class EntityMerger:
     """Handles entity deduplication and merge operations."""
 
-    def __init__(self, storage: StorageBackend) -> None:
+    def __init__(self, storage: SQLiteBackend) -> None:
         self._storage = storage
 
     async def _redirect_relationship(

@@ -32,6 +32,10 @@ dependencies = [
     "python-ulid>=3.0.0",
     "aiosqlite>=0.20.0",
     "numpy>=1.24",
+    # Declared directly, not relied on transitively through mcp: the tool
+    # modules import pydantic themselves to define the per-item argument models
+    # that give add_entities and add_relationships a real JSON schema.
+    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]

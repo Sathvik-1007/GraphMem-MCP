@@ -4,14 +4,44 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from graph_mem.models import Relationship
 from graph_mem.utils import GraphMemError
 
-from ._core import _error_response, _require_state, tool
+from ._core import (
+    MAX_LIST_LIMIT,
+    MAX_OFFSET,
+    _clamp_limit,
+    _error_response,
+    _require_state,
+    _require_text,
+    _validate_items,
+    tool,
+)
+
+
+class RelationshipInput(BaseModel):
+    """One relationship for :func:`add_relationships`.
+
+    Declared as a model rather than a bare ``dict`` so the tool's JSON schema
+    names the keys and their types.  Without it the client sees only
+    ``{"type": "object"}`` and the calling model has to guess.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(description="Name of the entity the edge starts at.")
+    target: str = Field(description="Name of the entity the edge points to.")
+    relationship_type: str = Field(description="Edge type, e.g. 'knows', 'depends_on'.")
+    weight: float = Field(default=1.0, description="Edge strength, 0-1. Default 1.0.")
+    properties: dict[str, Any] = Field(
+        default_factory=dict, description="Arbitrary key-value metadata for the edge."
+    )
 
 
 @tool()
-async def add_relationships(relationships: list[dict[str, Any]]) -> dict[str, Any]:
+async def add_relationships(relationships: list[RelationshipInput]) -> dict[str, Any]:
     """Add relationships (edges) between entities in the knowledge graph.
 
     Each relationship needs: source (str, entity name), target (str, entity name),
@@ -21,6 +51,11 @@ async def add_relationships(relationships: list[dict[str, Any]]) -> dict[str, An
     """
     try:
         state = _require_state()
+
+        # Validate and coerce before constructing any domain object, so a null
+        # or wrong-typed field names itself in the error instead of blowing up
+        # as an AttributeError deeper down.
+        items = _validate_items(relationships, RelationshipInput, field="relationships")
 
         # Cache resolved entities — each unique name resolved only once.
         # For 100 rels referencing 20 unique names, this is 20 lookups not 200.
@@ -34,22 +69,16 @@ async def add_relationships(relationships: list[dict[str, Any]]) -> dict[str, An
             return resolved_cache[key]
 
         rel_objs: list[Relationship] = []
-        for raw in relationships:
-            source_name: str = raw["source"]
-            target_name: str = raw["target"]
-            rel_type: str = raw["relationship_type"]
-            weight: float = float(raw.get("weight", 1.0))
-            properties: dict[str, object] = raw.get("properties", {})
-
-            source_entity = await _cached_resolve(source_name)
-            target_entity = await _cached_resolve(target_name)
+        for item in items:
+            source_entity = await _cached_resolve(item.source)
+            target_entity = await _cached_resolve(item.target)
 
             rel = Relationship(
                 source_id=source_entity.id,
                 target_id=target_entity.id,
-                relationship_type=rel_type,
-                weight=weight,
-                properties=properties,
+                relationship_type=item.relationship_type,
+                weight=item.weight,
+                properties=dict(item.properties),
             )
             rel_objs.append(rel)
 
@@ -57,13 +86,13 @@ async def add_relationships(relationships: list[dict[str, Any]]) -> dict[str, An
 
         # Enrich results with names for clarity
         enriched: list[dict[str, Any]] = []
-        for raw, result in zip(relationships, results, strict=True):
+        for item, result in zip(items, results, strict=True):
             enriched.append(
                 {
                     **result,
-                    "source": raw["source"],
-                    "target": raw["target"],
-                    "relationship_type": raw["relationship_type"],
+                    "source": item.source,
+                    "target": item.target,
+                    "relationship_type": item.relationship_type,
                 }
             )
 
@@ -96,6 +125,10 @@ async def delete_relationships(
     """
     try:
         state = _require_state()
+        source = _require_text(source, "source")
+        target = _require_text(target, "target")
+        if relationship_type is not None:
+            relationship_type = _require_text(relationship_type, "relationship_type")
 
         deleted = await state.graph.delete_relationships(source, target, relationship_type)
 
@@ -136,6 +169,11 @@ async def update_relationship(
     """
     try:
         state = _require_state()
+        source = _require_text(source, "source")
+        target = _require_text(target, "target")
+        relationship_type = _require_text(relationship_type, "relationship_type")
+        if new_type is not None:
+            new_type = _require_text(new_type, "new_type")
 
         result = await state.graph.update_relationship(
             source,
@@ -167,13 +205,17 @@ async def list_relationships(
     Args:
         entity_name: Optional — show only relationships involving this entity.
         relationship_type: Optional — filter to this relationship type.
-        limit: Maximum relationships to return (default 100, max 500).
-        offset: Skip this many relationships for pagination (default 0).
+        limit: Maximum relationships to return (default 100, clamped to 1-500).
+        offset: Skip this many relationships for pagination (default 0, max 1000000).
     """
     try:
         state = _require_state()
-        limit = min(max(1, limit), 500)
-        offset = max(0, offset)
+        limit = _clamp_limit(limit, maximum=MAX_LIST_LIMIT)
+        offset = _clamp_limit(offset, maximum=MAX_OFFSET, minimum=0)
+        if entity_name is not None:
+            entity_name = _require_text(entity_name, "entity_name")
+        if relationship_type is not None:
+            relationship_type = _require_text(relationship_type, "relationship_type")
 
         if entity_name:
             # Scoped to a specific entity

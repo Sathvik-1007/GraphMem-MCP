@@ -32,7 +32,7 @@ from graph_mem.utils.errors import (
 
 
 def _make_storage(cached: dict[str, bytes] | None = None) -> MagicMock:
-    """Return a MagicMock that satisfies StorageBackend async interface.
+    """Return a MagicMock that satisfies SQLiteBackend async interface.
 
     ``fetch_all`` emulates the embedding_cache table well enough for the
     engine's batched SELECT/UPDATE/INSERT: cache rows come back for a SELECT,

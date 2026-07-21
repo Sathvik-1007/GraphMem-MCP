@@ -1,8 +1,8 @@
 """Hybrid search combining vector similarity, FTS5 full-text, and RRF fusion.
 
 Search strategy:
-1. Vector similarity via StorageBackend.vector_search (cosine distance)
-2. FTS5 full-text search via StorageBackend.fts_search_*
+1. Vector similarity via SQLiteBackend.vector_search (cosine distance)
+2. FTS5 full-text search via SQLiteBackend.fts_search_*
 3. Reciprocal Rank Fusion to combine rankings
 
 RRF_score(item) = sum(1 / (k + rank_in_method))  where k=60
@@ -11,7 +11,7 @@ Fused scores are reported raw, so they top out at ``MAX_RRF_SCORE`` ≈ 0.0164
 and mean the same thing from one query to the next.
 
 The search layer is **storage-agnostic**: it delegates all persistence
-and query operations to a :class:`StorageBackend`.
+and query operations to a :class:`SQLiteBackend`.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from graph_mem.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from graph_mem.semantic.embeddings import EmbeddingEngine
-    from graph_mem.storage.base import StorageBackend
+    from graph_mem.storage import SQLiteBackend
 
 
 class _RelationshipEntry(TypedDict):
@@ -99,7 +99,7 @@ class HybridSearch:
     """
 
     def __init__(
-        self, storage: StorageBackend, embeddings: EmbeddingEngine, *, alpha: float = 0.5
+        self, storage: SQLiteBackend, embeddings: EmbeddingEngine, *, alpha: float = 0.5
     ) -> None:
         self._storage = storage
         self._embeddings = embeddings

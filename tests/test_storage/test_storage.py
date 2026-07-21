@@ -1,4 +1,4 @@
-"""Tests for graph_mem.storage — backend registry, factory, and SQLiteBackend."""
+"""Tests for graph_mem.storage — the backend factory and SQLiteBackend."""
 
 from __future__ import annotations
 
@@ -10,20 +10,18 @@ if TYPE_CHECKING:
 import pytest
 
 from graph_mem.storage import (
+    SUPPORTED_BACKENDS,
     SQLiteBackend,
-    available_backends,
     create_backend,
-    register_backend,
 )
-from graph_mem.storage.base import StorageBackend as StorageBackendABC
 from graph_mem.utils.errors import ConfigError
 
 # ── Registry / factory tests ────────────────────────────────────────────────
 
 
-def test_available_backends_includes_sqlite():
-    """sqlite is always registered."""
-    assert "sqlite" in available_backends()
+def test_supported_backends_lists_sqlite():
+    """sqlite is the backend this package builds."""
+    assert "sqlite" in SUPPORTED_BACKENDS
 
 
 def test_create_backend_sqlite(tmp_db_path: Path):
@@ -48,218 +46,6 @@ def test_create_backend_sqlite_string_path(tmp_path: Path):
     """create_backend accepts string paths and converts to Path."""
     backend = create_backend("sqlite", db_path=str(tmp_path / "graph.db"))
     assert isinstance(backend, SQLiteBackend)
-
-
-def test_register_backend_duplicate_raises():
-    """Registering 'sqlite' again raises ValueError."""
-    with pytest.raises(ValueError, match="already registered"):
-        register_backend("sqlite", SQLiteBackend)
-
-
-def test_register_and_use_custom_backend():
-    """A registered custom backend can be instantiated via create_backend."""
-
-    class FakeBackend(StorageBackendABC):
-        """Minimal concrete stub for testing the registry."""
-
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        # Implement all abstract methods as no-ops for instantiation
-        async def initialize(self):
-            pass
-
-        async def close(self):
-            pass
-
-        async def transaction(self):
-            yield  # pragma: no cover
-
-        async def upsert_entity(self, **kw):
-            return "created"
-
-        async def get_entity_by_id(self, entity_id):
-            return None
-
-        async def get_entity_by_name(self, name, entity_type=None):
-            return None
-
-        async def get_entity_by_name_nocase(self, name):
-            return None
-
-        async def list_entities(self, entity_type=None, limit=100, offset=0):
-            return []
-
-        async def update_entity_fields(self, entity_id, updates):
-            pass
-
-        async def delete_entity(self, entity_id):
-            pass
-
-        async def count_entities(self):
-            return 0
-
-        async def entity_type_distribution(self):
-            return {}
-
-        async def most_connected_entities(self, limit=10):
-            return []
-
-        async def recent_entities(self, limit=10):
-            return []
-
-        async def upsert_relationship(self, **kw):
-            return "created"
-
-        async def get_relationship(self, source_id, target_id, relationship_type):
-            return None
-
-        async def get_relationships_for_entity(
-            self, entity_id, direction="both", relationship_type=None
-        ):
-            return []
-
-        async def get_relationships_for_entities(self, entity_ids, direction="both"):
-            return {eid: [] for eid in entity_ids}
-
-        async def delete_relationships(self, source_id, target_id, relationship_type=None):
-            return 0
-
-        async def get_relationships_by_column(self, column, entity_id):
-            return []
-
-        async def update_relationship(self, rel_id, updates):
-            pass
-
-        async def delete_relationship_by_id(self, rel_id):
-            pass
-
-        async def count_relationships(self):
-            return 0
-
-        async def relationship_type_distribution(self):
-            return {}
-
-        async def insert_observation(self, **kw):
-            pass
-
-        async def get_observations_for_entity(self, entity_id):
-            return []
-
-        async def move_observations(self, from_entity_id, to_entity_id):
-            return 0
-
-        async def count_observations(self):
-            return 0
-
-        async def delete_observation(self, obs_id):
-            return False
-
-        async def update_observation(self, obs_id, content):
-            return False
-
-        async def upsert_entity_embedding(self, entity_id, embedding):
-            pass
-
-        async def upsert_observation_embedding(self, obs_id, embedding):
-            pass
-
-        async def delete_entity_embedding(self, entity_id):
-            pass
-
-        async def delete_observation_embedding(self, obs_id):
-            pass
-
-        async def get_cached_embedding(self, content_hash, model_name):
-            return None
-
-        async def set_cached_embedding(self, content_hash, embedding, model_name, created_at):
-            pass
-
-        async def prune_embedding_cache(self, max_size):
-            pass
-
-        async def ensure_vec_tables(self, dimension):
-            return False
-
-        async def vector_search(self, table, query_embedding, limit):
-            return []
-
-        async def fts_search_entities(self, query, limit):
-            return []
-
-        async def fts_search_observations(self, query, limit):
-            return []
-
-        async def fts_suggest_similar(self, name, limit=5):
-            return []
-
-        async def get_metadata(self, key):
-            return None
-
-        async def set_metadata(self, key, value):
-            pass
-
-        async def fetch_all(self, sql, params=()):
-            return []
-
-        async def fetch_one(self, sql, params=()):
-            return None
-
-        async def fetch_entity_rows(self, entity_ids):
-            return []
-
-        async def fetch_relationships_between(self, entity_ids):
-            return []
-
-        async def fetch_adjacent_edges(
-            self, entity_ids, *, direction="both", relationship_types=None
-        ):
-            return []
-
-        async def fetch_observation_parents(self, observation_ids):
-            return {}
-
-        async def fetch_observations_for_entities(self, entity_ids):
-            return []
-
-        async def fetch_observation_rows(self, observation_ids, *, entity_id=None):
-            return []
-
-        async def resolve_entity_names(self, entity_ids):
-            return {}
-
-        async def get_schema_version(self):
-            return 0
-
-        @property
-        def backend_type(self):
-            return "fake"
-
-        @property
-        def vec_available(self):
-            return False
-
-    try:
-        register_backend("_test_fake", FakeBackend)
-        backend = create_backend("_test_fake", some_opt="hello")
-        assert isinstance(backend, FakeBackend)
-        assert backend.kwargs == {"some_opt": "hello"}
-        assert backend.backend_type == "fake"
-    finally:
-        # Clean up the registry so other tests are not affected
-        from graph_mem.storage import _REGISTRY
-
-        _REGISTRY.pop("_test_fake", None)
-
-
-# ── StorageBackend ABC tests ────────────────────────────────────────────────
-
-
-def test_storage_backend_is_abstract():
-    """Cannot instantiate StorageBackend directly."""
-    with pytest.raises(TypeError):
-        StorageBackendABC()
 
 
 # ── SQLiteBackend lifecycle tests ───────────────────────────────────────────

@@ -23,7 +23,7 @@ from aiohttp import web
 
 from graph_mem.graph.engine import GraphEngine
 from graph_mem.semantic import EmbeddingEngine, HybridSearch
-from graph_mem.storage import StorageBackend, create_backend
+from graph_mem.storage import SQLiteBackend, create_backend
 from graph_mem.utils import get_logger, load_config, setup_logging
 
 from ._keys import (
@@ -79,7 +79,7 @@ def _resolve_frontend_dir() -> Path | None:
 
 
 async def create_app(
-    storage: StorageBackend,
+    storage: SQLiteBackend,
     search: HybridSearch,
     graph: GraphEngine | None = None,
     db_path: str | None = None,

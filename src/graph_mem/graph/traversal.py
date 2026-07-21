@@ -38,7 +38,7 @@ from graph_mem.utils.logging import get_logger
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
-    from graph_mem.storage.base import StorageBackend
+    from graph_mem.storage import SQLiteBackend
 
 log = get_logger("graph.traversal")
 
@@ -109,7 +109,7 @@ class GraphTraversal:
 
     def __init__(
         self,
-        storage: StorageBackend,
+        storage: SQLiteBackend,
         *,
         node_budget: int = DEFAULT_NODE_BUDGET,
     ) -> None:
