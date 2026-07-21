@@ -14,11 +14,11 @@ from ._core import (
     _error_response,
     _require_state,
     log,
-    mcp,
+    tool,
 )
 
 
-@mcp.tool()
+@tool()
 async def add_entities(entities: list[dict[str, Any]]) -> dict[str, Any]:
     """Add entities to the knowledge graph. Entities with the same name and type are
     automatically merged.
@@ -102,7 +102,7 @@ async def add_entities(entities: list[dict[str, Any]]) -> dict[str, Any]:
         return _error_response(GraphMemError(f"Invalid input: {exc}"), tool_name="add_entities")
 
 
-@mcp.tool()
+@tool()
 async def update_entity(
     name: str,
     description: str | None = None,
@@ -137,7 +137,7 @@ async def update_entity(
         return _error_response(GraphMemError(f"Invalid input: {exc}"), tool_name="update_entity")
 
 
-@mcp.tool()
+@tool()
 async def delete_entities(names: list[str]) -> dict[str, Any]:
     """Remove entities from the knowledge graph by name.
 
@@ -190,7 +190,7 @@ async def delete_entities(names: list[str]) -> dict[str, Any]:
         return _error_response(exc, tool_name="delete_entities")
 
 
-@mcp.tool()
+@tool()
 async def merge_entities(
     target: str,
     source: str,
@@ -230,7 +230,7 @@ async def merge_entities(
         return _error_response(exc, tool_name="merge_entities")
 
 
-@mcp.tool()
+@tool()
 async def get_entity(name: str) -> dict[str, Any]:
     """Get full details of a single entity by name, including observations and relationships.
 
@@ -254,7 +254,7 @@ async def get_entity(name: str) -> dict[str, Any]:
         return _error_response(exc, tool_name="get_entity")
 
 
-@mcp.tool()
+@tool()
 async def list_entities(
     entity_type: str | None = None,
     limit: int = 50,

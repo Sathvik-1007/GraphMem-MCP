@@ -8,13 +8,14 @@ itself — it is purely infrastructure.
 from __future__ import annotations
 
 import asyncio
+import functools
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable, Coroutine
     from pathlib import Path
 
     from graph_mem.graph.engine import ObservationResult
@@ -32,6 +33,13 @@ log = get_logger("server")
 # ---------------------------------------------------------------------------
 # Shared application state
 # ---------------------------------------------------------------------------
+
+
+def _new_idle_event() -> asyncio.Event:
+    """Return an already-set Event — zero operations are in flight at startup."""
+    event = asyncio.Event()
+    event.set()
+    return event
 
 
 @dataclass
@@ -56,7 +64,16 @@ class AppState:
     # Multi-graph state
     _graphmem_dir: Path | None = None  # Path to .graphmem/ directory
     _active_graph: str = "default"  # Currently active graph name
+    # Held exclusively while swapping engines; acquired briefly by every tool
+    # call so a switch cannot begin between a caller's entry and its first use
+    # of the engines.
     _switch_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Number of tool invocations currently holding references to the engines.
+    _active_ops: int = 0
+    # Set exactly when ``_active_ops == 0``.  ``switch_graph`` waits on this so
+    # it never closes a storage backend that an in-flight tool is writing
+    # through.
+    _ops_idle: asyncio.Event = field(default_factory=_new_idle_event)
 
 
 @dataclass
@@ -100,6 +117,82 @@ def _require_state() -> InitializedState:
         embeddings=_state.embeddings,
         search=_state.search,
     )
+
+
+# ---------------------------------------------------------------------------
+# Engine-swap safety
+# ---------------------------------------------------------------------------
+# The MCP runtime dispatches every request as its own task, so several tool
+# handlers run concurrently against one shared set of engines.  ``switch_graph``
+# replaces those engines and closes the previous storage backend.  Closing a
+# backend that another task is mid-transaction on aborts that transaction and
+# can lose the writes it already made, so a switch must wait until no tool call
+# is using the engines.
+#
+# This is a readers/writer handshake built from the two primitives already on
+# AppState:
+#
+#   readers (tool calls)  acquire ``_switch_lock`` just long enough to register
+#                         themselves in ``_active_ops``, then release it and run
+#   writer (switch_graph) holds ``_switch_lock`` for its whole duration, which
+#                         blocks new readers from registering, and waits on
+#                         ``_ops_idle`` until the already-registered readers
+#                         finish
+#
+# A reader never needs the lock again after registering, so the writer's wait
+# always terminates.
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def _op_guard() -> AsyncIterator[None]:
+    """Pin the current engines for the duration of one tool invocation."""
+    async with _state._switch_lock:
+        _state._active_ops += 1
+        _state._ops_idle.clear()
+    try:
+        yield
+    finally:
+        _state._active_ops -= 1
+        if _state._active_ops == 0:
+            _state._ops_idle.set()
+
+
+@asynccontextmanager
+async def _exclusive_engines() -> AsyncIterator[None]:
+    """Block new tool invocations and wait for in-flight ones to finish.
+
+    Used by ``switch_graph`` so it can close and replace the storage backend
+    with no reader holding a reference to it.
+    """
+    async with _state._switch_lock:
+        await _state._ops_idle.wait()
+        yield
+
+
+_AsyncTool = TypeVar("_AsyncTool", bound="Callable[..., Coroutine[Any, Any, Any]]")
+
+
+def tool(*args: Any, **kwargs: Any) -> Callable[[_AsyncTool], _AsyncTool]:
+    """Register an async MCP tool that participates in engine-swap draining.
+
+    Drop-in replacement for ``@mcp.tool()``.  ``functools.wraps`` keeps the
+    name, docstring, and signature intact, so FastMCP derives exactly the same
+    JSON schema it would from the undecorated function.
+    """
+
+    def decorator(fn: _AsyncTool) -> _AsyncTool:
+        @functools.wraps(fn)
+        async def guarded(*call_args: Any, **call_kwargs: Any) -> Any:
+            async with _op_guard():
+                return await fn(*call_args, **call_kwargs)
+
+        mcp.tool(*args, **kwargs)(guarded)
+        # Return the guarded callable so direct in-process calls (tests, the
+        # CLI) take the same path the MCP runtime does.
+        return guarded  # type: ignore[return-value]
+
+    return decorator
 
 
 # ---------------------------------------------------------------------------

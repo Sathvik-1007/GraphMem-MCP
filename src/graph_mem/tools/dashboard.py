@@ -7,12 +7,12 @@ from typing import Any
 
 from graph_mem.utils import GraphMemError, get_logger
 
-from ._core import _error_response, _require_state, _state, mcp
+from ._core import _error_response, _require_state, _state, tool
 
 log = get_logger("server")
 
 
-@mcp.tool()
+@tool()
 async def open_dashboard(
     host: str = "127.0.0.1",
     port: int = 0,

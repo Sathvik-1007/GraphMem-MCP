@@ -331,21 +331,34 @@ async def test_api_stats_distributions(client):
 # ---------------------------------------------------------------------------
 
 
-def test_ui_cli_command_exists():
-    """`graph-mem ui --help` doesn't error."""
+def test_ui_cli_command_exists(tmp_path):
+    """`graph-mem ui --help` exits 0 and prints help from an unrelated cwd."""
+    import os
     import subprocess
     import sys
+    from pathlib import Path
+
+    import graph_mem
+
+    # Run from a directory with no relation to the project so nothing is picked
+    # up implicitly from the cwd.  The child process therefore needs to be told
+    # where the package lives; deriving it from the imported module keeps this
+    # correct whether the suite runs against a source checkout or an install.
+    package_parent = str(Path(graph_mem.__file__).resolve().parent.parent)
+    env = {**os.environ, "PYTHONPATH": package_parent}
 
     result = subprocess.run(
         [sys.executable, "-m", "graph_mem.cli.main", "ui", "--help"],
         capture_output=True,
         text=True,
-        timeout=15,
-        cwd="/tmp",
+        timeout=60,
+        cwd=str(tmp_path),
+        env=env,
+        check=False,
     )
-    # Click prints help text to stdout and exits 0
-    assert result.returncode == 0
-    assert "ui" in result.stdout.lower() or "launch" in result.stdout.lower()
+    assert result.returncode == 0, result.stderr
+    assert "--port" in result.stdout
+    assert "--graph" in result.stdout
 
 
 # ---------------------------------------------------------------------------

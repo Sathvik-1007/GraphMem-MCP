@@ -7,10 +7,10 @@ from typing import Any
 from graph_mem.models import Relationship
 from graph_mem.utils import GraphMemError
 
-from ._core import _error_response, _require_state, mcp
+from ._core import _error_response, _require_state, tool
 
 
-@mcp.tool()
+@tool()
 async def add_relationships(relationships: list[dict[str, Any]]) -> dict[str, Any]:
     """Add relationships (edges) between entities in the knowledge graph.
 
@@ -77,7 +77,7 @@ async def add_relationships(relationships: list[dict[str, Any]]) -> dict[str, An
         )
 
 
-@mcp.tool()
+@tool()
 async def delete_relationships(
     source: str,
     target: str,
@@ -111,7 +111,7 @@ async def delete_relationships(
         return _error_response(exc, tool_name="delete_relationships")
 
 
-@mcp.tool()
+@tool()
 async def update_relationship(
     source: str,
     target: str,
@@ -152,7 +152,7 @@ async def update_relationship(
         return _error_response(exc, tool_name="update_relationship")
 
 
-@mcp.tool()
+@tool()
 async def list_relationships(
     entity_name: str | None = None,
     relationship_type: str | None = None,

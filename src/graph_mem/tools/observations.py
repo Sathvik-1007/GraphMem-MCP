@@ -10,10 +10,10 @@ if TYPE_CHECKING:
 from graph_mem.models import Observation
 from graph_mem.utils import GraphMemError
 
-from ._core import _embed_observations, _error_response, _require_state, mcp
+from ._core import _embed_observations, _error_response, _require_state, tool
 
 
-@mcp.tool()
+@tool()
 async def add_observations(
     entity_name: str,
     observations: list[str],
@@ -45,7 +45,7 @@ async def add_observations(
         return _error_response(GraphMemError(f"Invalid input: {exc}"), tool_name="add_observations")
 
 
-@mcp.tool()
+@tool()
 async def delete_observations(
     entity_name: str,
     observation_ids: list[str],
@@ -75,7 +75,7 @@ async def delete_observations(
         return _error_response(exc, tool_name="delete_observations")
 
 
-@mcp.tool()
+@tool()
 async def update_observation(
     entity_name: str,
     observation_id: str,

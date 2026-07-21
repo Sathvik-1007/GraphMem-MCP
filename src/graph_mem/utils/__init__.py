@@ -18,6 +18,7 @@ from graph_mem.utils.errors import (
     RelationshipError,
     SchemaError,
     SearchError,
+    ValidationError,
 )
 from graph_mem.utils.ids import generate_id
 from graph_mem.utils.logging import get_logger, setup_logging
@@ -38,6 +39,7 @@ __all__ = [
     "RelationshipError",
     "SchemaError",
     "SearchError",
+    "ValidationError",
     "generate_id",
     "get_logger",
     "load_config",

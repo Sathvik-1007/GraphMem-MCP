@@ -13,11 +13,11 @@ from ._core import (
     _embed_observations,
     _error_response,
     _require_state,
-    mcp,
+    tool,
 )
 
 
-@mcp.tool()
+@tool()
 async def graph_health() -> dict[str, Any]:
     """Get maintenance-oriented health stats for the knowledge graph.
 
@@ -120,7 +120,7 @@ async def graph_health() -> dict[str, Any]:
         return _error_response(exc, tool_name="graph_health")
 
 
-@mcp.tool()
+@tool()
 async def compact_observations(
     entity_name: str,
     keep_ids: list[str],
@@ -199,7 +199,7 @@ async def compact_observations(
         return _error_response(exc, tool_name="compact_observations")
 
 
-@mcp.tool()
+@tool()
 async def suggest_connections(
     entity_name: str,
     limit: int = 10,
@@ -283,7 +283,7 @@ async def suggest_connections(
         return _error_response(exc, tool_name="suggest_connections")
 
 
-@mcp.tool()
+@tool()
 async def audit_graph() -> str:
     """Screen the entire knowledge graph for quality issues. Returns a categorized
     plain-text report — not JSON — so any LLM can read it directly.

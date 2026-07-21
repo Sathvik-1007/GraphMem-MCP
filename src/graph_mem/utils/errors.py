@@ -16,6 +16,19 @@ class GraphMemError(Exception):
         super().__init__(message)
 
 
+# ── Input validation ─────────────────────────────────────────────────────────
+
+
+class ValidationError(GraphMemError):
+    """Caller-supplied input failed a boundary check.
+
+    Raised at trust boundaries (MCP tool arguments, HTTP request bodies) when
+    an argument is malformed, out of range, or names something the caller is
+    not permitted to address.  Distinct from :class:`IntegrityError`, which
+    reports a constraint the *database* rejected.
+    """
+
+
 # ── Database errors ──────────────────────────────────────────────────────────
 
 

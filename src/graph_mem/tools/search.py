@@ -8,10 +8,10 @@ from typing import Any
 
 from graph_mem.utils import GraphMemError
 
-from ._core import _error_response, _require_state, mcp
+from ._core import _error_response, _require_state, tool
 
 
-@mcp.tool()
+@tool()
 async def search_nodes(
     query: str,
     limit: int = 5,
@@ -55,7 +55,7 @@ async def search_nodes(
         return _error_response(exc, tool_name="search_nodes")
 
 
-@mcp.tool()
+@tool()
 async def search_observations(
     query: str,
     limit: int = 10,
@@ -94,7 +94,7 @@ async def search_observations(
         return _error_response(exc, tool_name="search_observations")
 
 
-@mcp.tool()
+@tool()
 async def find_connections(
     entity_name: str,
     max_hops: int = 2,
@@ -133,7 +133,7 @@ async def find_connections(
         return _error_response(exc, tool_name="find_connections")
 
 
-@mcp.tool()
+@tool()
 async def get_subgraph(
     entity_names: list[str],
     radius: int = 2,
@@ -163,7 +163,7 @@ async def get_subgraph(
         return _error_response(exc, tool_name="get_subgraph")
 
 
-@mcp.tool()
+@tool()
 async def find_paths(
     source: str,
     target: str,
@@ -202,7 +202,7 @@ async def find_paths(
         return _error_response(exc, tool_name="find_paths")
 
 
-@mcp.tool()
+@tool()
 async def read_graph() -> dict[str, Any]:
     """Get an overview of the knowledge graph: entity/relationship/observation counts,
     type distributions, most connected entities, and recently updated entities.

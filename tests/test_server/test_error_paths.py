@@ -6,19 +6,6 @@ and other paths not exercised by the happy-path tool tests.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-import pytest_asyncio
-
-import graph_mem.server as server_mod
-from graph_mem.graph.engine import GraphEngine
-from graph_mem.graph.merge import EntityMerger
-from graph_mem.graph.traversal import GraphTraversal
-from graph_mem.semantic.embeddings import EmbeddingEngine
-from graph_mem.semantic.search import HybridSearch
 from graph_mem.server import (
     _embed_entities,
     _embed_observations,
@@ -41,50 +28,6 @@ from graph_mem.server import (
     update_observation,
     update_relationship,
 )
-from graph_mem.utils.config import Config
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest_asyncio.fixture
-async def setup_server(tmp_path: Path):
-    """Populate module-level _state for tool tests."""
-    from graph_mem.storage import SQLiteBackend
-
-    db_path = tmp_path / "test.db"
-    storage = SQLiteBackend(db_path)
-    await storage.initialize()
-
-    embeddings = EmbeddingEngine(model_name="test", use_onnx=False)
-    graph = GraphEngine(storage)
-    traversal = GraphTraversal(storage)
-    merger = EntityMerger(storage)
-    search = HybridSearch(storage, embeddings)
-
-    server_mod._state.storage = storage
-    server_mod._state.graph = graph
-    server_mod._state.traversal = traversal
-    server_mod._state.merger = merger
-    server_mod._state.embeddings = embeddings
-    server_mod._state.search = search
-    server_mod._state.config = Config(db_path=db_path)
-
-    yield
-
-    await storage.close()
-    server_mod._state.storage = None
-    server_mod._state.graph = None
-    server_mod._state.traversal = None
-    server_mod._state.merger = None
-    server_mod._state.embeddings = None
-    server_mod._state.search = None
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# add_entities error paths
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 async def test_add_entities_missing_name(setup_server):

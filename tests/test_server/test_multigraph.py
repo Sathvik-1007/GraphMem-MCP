@@ -6,22 +6,15 @@ open_dashboard, _require_state, _error_response, create_server.
 
 from __future__ import annotations
 
-import contextlib
 import sqlite3
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
-import pytest_asyncio
 from mcp.server.fastmcp import FastMCP
 
 import graph_mem.server as server_mod
-from graph_mem.graph.engine import GraphEngine
-from graph_mem.graph.merge import EntityMerger
-from graph_mem.graph.traversal import GraphTraversal
-from graph_mem.semantic.embeddings import EmbeddingEngine
-from graph_mem.semantic.search import HybridSearch
 from graph_mem.server import (
     _error_response,
     _require_state,
@@ -76,58 +69,6 @@ def _init_db(path: Path) -> None:
     )
     conn.close()
 
-
-@pytest_asyncio.fixture
-async def setup_server(tmp_path: Path):
-    """Populate module-level _state so tool functions work.
-
-    Also sets _graphmem_dir to a tmp dir with a default graph.db.
-    """
-    from graph_mem.storage import SQLiteBackend
-
-    graphmem_dir = tmp_path / ".graphmem"
-    graphmem_dir.mkdir()
-
-    db_path = graphmem_dir / "graph.db"
-    storage = SQLiteBackend(db_path)
-    await storage.initialize()
-
-    embeddings = EmbeddingEngine(model_name="test", use_onnx=False)
-
-    graph = GraphEngine(storage)
-    traversal = GraphTraversal(storage)
-    merger = EntityMerger(storage)
-    search = HybridSearch(storage, embeddings)
-
-    server_mod._state.storage = storage
-    server_mod._state.graph = graph
-    server_mod._state.traversal = traversal
-    server_mod._state.merger = merger
-    server_mod._state.embeddings = embeddings
-    server_mod._state.search = search
-    server_mod._state.config = Config(db_path=db_path)
-    server_mod._state._graphmem_dir = graphmem_dir
-    server_mod._state._active_graph = "default"
-
-    yield graphmem_dir
-
-    # Close whichever storage is currently active (may differ from original
-    # if switch_graph replaced it). The original is already closed by
-    # _switch_engines; closing twice is harmless on SQLiteBackend.
-    current_storage = server_mod._state.storage
-    if current_storage is not None:
-        await current_storage.close()
-    if current_storage is not storage:
-        with contextlib.suppress(Exception):
-            await storage.close()
-    server_mod._state.storage = None
-    server_mod._state.graph = None
-    server_mod._state.traversal = None
-    server_mod._state.merger = None
-    server_mod._state.embeddings = None
-    server_mod._state.search = None
-    server_mod._state._graphmem_dir = None
-    server_mod._state._active_graph = "default"
 
 
 # ---------------------------------------------------------------------------
