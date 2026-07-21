@@ -2,27 +2,61 @@ import { useReducer, useEffect, useCallback, useMemo } from "react";
 import { fetchGraph, fetchEntity, fetchStats } from "../api/client";
 import type { AppState, AppAction } from "../types/graph";
 
+/**
+ * How many entities to pull into the visualization.
+ *
+ * The API defaults to 500 and hard-caps at 5000. The old value of 200 silently
+ * truncated any real graph — and since the API only returns relationships
+ * *between* the entities it returned, a truncated graph also under-reports
+ * connectivity. 2000 covers the large majority of graphs while keeping the
+ * payload and the per-frame node count sane; anything beyond it is reported to
+ * the user via `truncated` below rather than being quietly dropped.
+ */
+const GRAPH_FETCH_LIMIT = 2000;
+
 const initialState: AppState = {
   graph: null,
   selectedEntity: null,
   stats: null,
   searchResults: null,
   visibleEntityTypes: new Set(),
+  knownEntityTypes: new Set(),
   showEdgeLabels: false,
   loading: true,
   error: null,
 };
 
+function sameMembers(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
 function reducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
     case "SET_GRAPH": {
-      const types = new Set(
-        action.payload.entities.map((e) => e.entity_type)
-      );
+      // A refresh must not wipe the user's type filters. Types the user has
+      // explicitly hidden stay hidden; types never seen before default to
+      // visible; types that no longer appear in the graph drop out.
+      const present = new Set(action.payload.entities.map((e) => e.entity_type));
+      const visible = new Set<string>();
+      for (const t of present) {
+        if (!state.knownEntityTypes.has(t) || state.visibleEntityTypes.has(t)) {
+          visible.add(t);
+        }
+      }
+      const known = new Set(state.knownEntityTypes);
+      for (const t of present) known.add(t);
+
       return {
         ...state,
         graph: action.payload,
-        visibleEntityTypes: types,
+        // Reuse the old Set when the contents are unchanged: a fresh identity
+        // would retrigger GraphCanvas's build effect and rescramble the layout.
+        visibleEntityTypes: sameMembers(visible, state.visibleEntityTypes)
+          ? state.visibleEntityTypes
+          : visible,
+        knownEntityTypes: known,
         loading: false,
       };
     }
@@ -57,7 +91,7 @@ export function useGraph() {
     async function load() {
       try {
         const [graph, stats] = await Promise.all([
-          fetchGraph(200),
+          fetchGraph(GRAPH_FETCH_LIMIT),
           fetchStats(),
         ]);
         if (cancelled) return;
@@ -122,7 +156,7 @@ export function useGraph() {
   const refreshGraph = useCallback(async () => {
     try {
       const [graph, stats] = await Promise.all([
-        fetchGraph(200),
+        fetchGraph(GRAPH_FETCH_LIMIT),
         fetchStats(),
       ]);
       dispatch({ type: "SET_GRAPH", payload: graph });
@@ -132,8 +166,20 @@ export function useGraph() {
     }
   }, []);
 
+  /**
+   * Set when the server holds more entities than it returned, so the picture on
+   * screen is a subset. Non-null value is how many were left out.
+   */
+  const truncatedBy = useMemo(() => {
+    const g = state.graph;
+    if (!g) return null;
+    const missing = g.total_entities - g.entities.length;
+    return missing > 0 ? missing : null;
+  }, [state.graph]);
+
   return {
     state,
+    truncatedBy,
     selectEntity,
     clearEntity,
     toggleEntityType,

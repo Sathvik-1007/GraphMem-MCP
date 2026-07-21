@@ -217,6 +217,15 @@ def test_register_and_use_custom_backend():
         ):
             return []
 
+        async def fetch_observation_parents(self, observation_ids):
+            return {}
+
+        async def fetch_observations_for_entities(self, entity_ids):
+            return []
+
+        async def fetch_observation_rows(self, observation_ids, *, entity_id=None):
+            return []
+
         async def resolve_entity_names(self, entity_ids):
             return {}
 

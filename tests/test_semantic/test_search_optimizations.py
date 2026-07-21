@@ -1,9 +1,10 @@
 """Tests for search optimization fixes: FTS5 hardening, batch relationships,
-RRF alpha, observation boost."""
+RRF alpha, observation boost, raw scores, and filter-before-truncate."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -16,7 +17,12 @@ from graph_mem.models.entity import Entity
 from graph_mem.models.observation import Observation
 from graph_mem.models.relationship import Relationship
 from graph_mem.semantic.embeddings import EmbeddingEngine
-from graph_mem.semantic.search import HybridSearch
+from graph_mem.semantic.search import (
+    MAX_OBS_BOOST,
+    MAX_RELATIONSHIPS_PER_RESULT,
+    MAX_RRF_SCORE,
+    HybridSearch,
+)
 from graph_mem.storage import SQLiteBackend
 
 
@@ -122,12 +128,11 @@ async def test_rrf_alpha_default_equal_weight(search_env):
     fts = {"a": 0.05, "c": 0.1}
     result = HybridSearch._rrf_fuse(vec, fts, alpha=0.5)
     scores = dict(result)
-    # After normalization, "a" has the highest raw score so it normalizes to 1.0.
-    # raw_a = 0.5*0.1 + 0.5*0.05 = 0.075
-    # raw_b = 0.5*0.05 = 0.025
-    # raw_c = 0.5*0.1 = 0.05
-    # max = 0.075 → a=1.0, c=0.05/0.075≈0.6667, b=0.025/0.075≈0.3333
-    assert scores["a"] == pytest.approx(1.0)
+    # Raw, unnormalized fused scores:
+    # a = 0.5*0.1 + 0.5*0.05 = 0.075
+    # b = 0.5*0.05 = 0.025
+    # c = 0.5*0.1 = 0.05
+    assert scores["a"] == pytest.approx(0.075)
     assert scores["c"] > scores["b"]  # c ranks above b
 
 
@@ -138,7 +143,7 @@ async def test_rrf_alpha_zero_fts_only(search_env):
     result = HybridSearch._rrf_fuse(vec, fts, alpha=0.0)
     scores = dict(result)
     assert scores.get("a", 0.0) == 0.0  # vec result zeroed out
-    assert scores["b"] == pytest.approx(1.0)  # fts result normalized to 1.0
+    assert scores["b"] == pytest.approx(0.1)
 
 
 async def test_rrf_alpha_one_vector_only(search_env):
@@ -147,7 +152,7 @@ async def test_rrf_alpha_one_vector_only(search_env):
     fts = {"b": 0.1}
     result = HybridSearch._rrf_fuse(vec, fts, alpha=1.0)
     scores = dict(result)
-    assert scores["a"] == pytest.approx(1.0)  # normalized to 1.0
+    assert scores["a"] == pytest.approx(0.1)
     assert scores.get("b", 0.0) == 0.0
 
 
@@ -198,21 +203,19 @@ async def test_min_score_default_no_filtering(search_env):
 
 
 async def test_min_score_filters_low_relevance(search_env):
-    """min_score=1.0 keeps only the top-scored result (score=1.0 after normalization)."""
+    """A threshold above the RRF ceiling filters everything, even the top hit."""
     _db, graph, search = search_env
     await graph.add_entities([Entity(name="Alpha Centauri", entity_type="star")])
     await graph.add_entities([Entity(name="Beta Pictoris", entity_type="star")])
-    results = await search.search_entities("Alpha Centauri", min_score=1.0)
-    # With normalization, only the best match (score=1.0) survives
-    if results:
-        assert all(r["relevance_score"] >= 1.0 for r in results)
+    assert await search.search_entities("Alpha Centauri", min_score=MAX_RRF_SCORE * 2) == []
+    assert await search.search_entities("Alpha Centauri", min_score=MAX_RRF_SCORE / 2) != []
 
 
 async def test_min_score_entity_returns_empty_on_high_threshold(search_env):
-    """min_score above 1.0 returns nothing since max normalized score is 1.0."""
+    """min_score=1.0 returns nothing: no raw RRF score can reach 1.0."""
     _db, graph, search = search_env
     await graph.add_entities([Entity(name="TestEntity", entity_type="concept")])
-    results = await search.search_entities("TestEntity", min_score=1.1)
+    results = await search.search_entities("TestEntity", min_score=1.0)
     assert results == []
 
 
@@ -230,17 +233,186 @@ async def test_min_score_observations_high_threshold(search_env):
     _db, graph, search = search_env
     await graph.add_entities([Entity(name="Obs Host2", entity_type="concept")])
     await graph.add_observations("Obs Host2", [Observation.pending("Random note")])
-    results = await search.search_observations("completely unrelated query xyz", min_score=1.1)
+    results = await search.search_observations("Random note", min_score=1.0)
     assert results == []
 
 
-async def test_rrf_fuse_score_normalization():
-    """Verify _rrf_fuse normalizes scores to [0, 1]."""
+# ═══════════════════════════════════════════════════════════════════════════
+# Raw (unnormalized) RRF scores
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def test_rrf_fuse_scores_are_raw_not_normalized():
+    """_rrf_fuse returns raw RRF sums, capped by MAX_RRF_SCORE."""
     vec = {"a": 0.2, "b": 0.1, "c": 0.05}
     fts = {"a": 0.1, "d": 0.15}
-    result = HybridSearch._rrf_fuse(vec, fts, alpha=0.5)
-    scores = dict(result)
-    # Max score should be 1.0 after normalization
-    assert max(scores.values()) == pytest.approx(1.0)
-    # All scores should be in [0, 1]
-    assert all(0.0 <= s <= 1.0 for s in scores.values())
+    scores = dict(HybridSearch._rrf_fuse(vec, fts, alpha=0.5))
+    assert scores["a"] == pytest.approx(0.15)
+    assert scores["b"] == pytest.approx(0.05)
+    # Relative spread survives instead of being squashed towards the top hit.
+    assert scores["b"] / scores["a"] == pytest.approx(1 / 3)
+
+
+async def test_single_junk_hit_does_not_score_one():
+    """One lone hit keeps its own small score instead of being promoted to 1.0."""
+    scores = dict(HybridSearch._rrf_fuse({}, {"junk": MAX_RRF_SCORE}, alpha=0.5))
+    assert scores["junk"] == pytest.approx(MAX_RRF_SCORE / 2)
+    assert scores["junk"] < 1.0
+
+
+async def test_single_bad_entity_hit_scores_low(search_env):
+    """End to end: the only match in an empty graph is not a perfect 1.0."""
+    _db, graph, search = search_env
+    await graph.add_entities([Entity(name="Quantum Widget", entity_type="concept")])
+    results = await search.search_entities("Quantum Widget")
+    assert len(results) == 1
+    assert results[0]["relevance_score"] <= MAX_RRF_SCORE
+    assert results[0]["relevance_score"] < 1.0
+
+
+async def test_observation_boost_is_capped(search_env):
+    """Many mediocre observations cannot outrank one perfect observation."""
+    db, graph, search = search_env
+    await graph.add_entities(
+        [
+            Entity(name="Chatty", entity_type="module"),
+            Entity(name="Precise", entity_type="module"),
+        ]
+    )
+    chatty = await graph.resolve_entity("Chatty")
+    precise = await graph.resolve_entity("Precise")
+
+    await graph.add_observations("Chatty", [Observation.pending(f"note {i}") for i in range(10)])
+    await graph.add_observations("Precise", [Observation.pending("the one true note")])
+
+    chatty_obs = await db.get_observations_for_entity(chatty.id)
+    precise_obs = await db.get_observations_for_entity(precise.id)
+
+    # Ten mediocre hits (0.004 each, 0.04 summed) against one perfect hit.
+    obs_scores = {str(r["id"]): 0.004 for r in chatty_obs}
+    obs_scores[str(precise_obs[0]["id"])] = MAX_RRF_SCORE
+
+    # Both channels agree, so the fused score of each observation is its own.
+    search._vector_search = AsyncMock(return_value=obs_scores)
+    search._fts_observation_search = AsyncMock(return_value=obs_scores)
+
+    boosted = dict(
+        await search._boost_from_observations("note", [], limit=10, obs_boost_factor=1.0)
+    )
+    assert boosted[chatty.id] <= boosted[precise.id]
+    assert boosted[chatty.id] <= MAX_OBS_BOOST
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Filters are applied before truncation
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def test_entity_type_filter_survives_candidate_truncation(search_env):
+    """A type match ranked below the candidate cut-off is still returned."""
+    _db, graph, search = search_env
+    await graph.add_entities(
+        [Entity(name=f"Star {i}", entity_type="star") for i in range(8)]
+        + [Entity(name="Deep Person", entity_type="person")]
+    )
+    person = await graph.resolve_entity("Deep Person")
+
+    # Stars rank above the person, pushing it past limit * CANDIDATE_MULTIPLIER.
+    fts_scores = {}
+    for i in range(8):
+        star = await graph.resolve_entity(f"Star {i}")
+        fts_scores[star.id] = 0.016 - i * 0.001
+    fts_scores[person.id] = 0.001
+
+    search._vector_search = AsyncMock(return_value={})
+    search._fts_entity_search = AsyncMock(return_value=fts_scores)
+
+    results = await search.search_entities(
+        "anything", limit=2, entity_types=["person"], boost_from_observations=False
+    )
+    assert [r["name"] for r in results] == ["Deep Person"]
+
+
+async def test_observation_scope_survives_candidate_truncation(search_env):
+    """Scoping to an entity finds its observations even when they rank low."""
+    db, graph, search = search_env
+    await graph.add_entities(
+        [Entity(name="Loud", entity_type="module"), Entity(name="Quiet", entity_type="module")]
+    )
+    quiet = await graph.resolve_entity("Quiet")
+
+    await graph.add_observations("Loud", [Observation.pending(f"loud {i}") for i in range(10)])
+    await graph.add_observations("Quiet", [Observation.pending("quiet note")])
+
+    loud_obs = await db.get_observations_for_entity((await graph.resolve_entity("Loud")).id)
+    quiet_obs = await db.get_observations_for_entity(quiet.id)
+
+    obs_scores = {str(r["id"]): 0.016 - i * 0.001 for i, r in enumerate(loud_obs)}
+    obs_scores[str(quiet_obs[0]["id"])] = 0.0001  # ranked last of eleven
+
+    search._vector_search = AsyncMock(return_value={})
+    search._fts_observation_search = AsyncMock(return_value=obs_scores)
+
+    results = await search.search_observations("note", limit=2, entity_id=quiet.id)
+    assert [r["content"] for r in results] == ["quiet note"]
+    assert results[0]["entity_name"] == "Quiet"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Relationship cap is reported
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def test_relationship_cap_is_surfaced(search_env):
+    """Results carry at most MAX_RELATIONSHIPS_PER_RESULT edges and say so."""
+    _db, graph, search = search_env
+    await graph.add_entities(
+        [Entity(name="Hub", entity_type="module")]
+        + [Entity(name=f"Leaf {i}", entity_type="module") for i in range(25)]
+    )
+    hub = await graph.resolve_entity("Hub")
+    leaves = [await graph.resolve_entity(f"Leaf {i}") for i in range(25)]
+    await graph.add_relationships(
+        [
+            Relationship(source_id=hub.id, target_id=leaf.id, relationship_type="USES", weight=1.0)
+            for leaf in leaves
+        ]
+    )
+
+    results = await search.search_entities("Hub", limit=1, boost_from_observations=False)
+    assert results[0]["name"] == "Hub"
+    assert len(results[0]["relationships"]) == MAX_RELATIONSHIPS_PER_RESULT
+    assert results[0]["relationships_truncated"] is True
+
+
+async def test_relationship_cap_not_flagged_when_under_limit(search_env):
+    """An entity below the cap reports relationships_truncated=False."""
+    _db, graph, search = search_env
+    await graph.add_entities(
+        [Entity(name="Small", entity_type="module"), Entity(name="Other", entity_type="module")]
+    )
+    small = await graph.resolve_entity("Small")
+    other = await graph.resolve_entity("Other")
+    await graph.add_relationships(
+        [Relationship(source_id=small.id, target_id=other.id, relationship_type="USES", weight=1.0)]
+    )
+
+    results = await search.search_entities("Small", limit=1, boost_from_observations=False)
+    assert results[0]["relationships_truncated"] is False
+
+
+async def test_observation_search_does_not_double_query_entities(search_env):
+    """Parent name and type come from one entity query, not two."""
+    db, graph, search = search_env
+    await graph.add_entities([Entity(name="Host", entity_type="service")])
+    await graph.add_observations("Host", [Observation.pending("a fact worth finding")])
+
+    async def _fail(_ids):
+        raise AssertionError("resolve_entity_names is a redundant second query")
+
+    db.resolve_entity_names = _fail
+
+    results = await search.search_observations("fact")
+    assert results
+    assert results[0]["entity_name"] == "Host"
+    assert results[0]["entity_type"] == "service"

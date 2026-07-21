@@ -89,6 +89,9 @@ export interface AppState {
   stats: StatsResponse | null;
   searchResults: SearchResponse | null;
   visibleEntityTypes: Set<string>;
+  /** Every entity type ever seen. A type in here but not in visibleEntityTypes
+   *  was hidden by the user, so a refresh must leave it hidden. */
+  knownEntityTypes: Set<string>;
   showEdgeLabels: boolean;
   loading: boolean;
   error: string | null;

@@ -914,6 +914,69 @@ class SQLiteBackend(StorageBackend):
 
         return edges
 
+    async def fetch_observation_parents(self, observation_ids: list[str]) -> dict[str, str]:
+        """Map observation IDs to the entity each belongs to.
+
+        Chunked, so a wide candidate set cannot exceed SQLite's bound-variable
+        limit and turn into an OperationalError.
+        """
+        if not observation_ids:
+            return {}
+        parents: dict[str, str] = {}
+        for chunk in _chunked(list(dict.fromkeys(observation_ids)), _MAX_SQL_VARIABLES):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = await self._require_db().fetch_all(
+                f"SELECT id, entity_id FROM observations WHERE id IN ({placeholders})",
+                tuple(chunk),
+            )
+            parents.update({str(r["id"]): str(r["entity_id"]) for r in rows})
+        return parents
+
+    async def fetch_observations_for_entities(
+        self, entity_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        """Return every observation belonging to any of *entity_ids*, newest first."""
+        if not entity_ids:
+            return []
+        rows: list[dict[str, Any]] = []
+        for chunk in _chunked(list(dict.fromkeys(entity_ids)), _MAX_SQL_VARIABLES):
+            placeholders = ",".join("?" for _ in chunk)
+            rows.extend(
+                await self._require_db().fetch_all(
+                    f"SELECT * FROM observations WHERE entity_id IN ({placeholders}) "
+                    "ORDER BY created_at DESC",
+                    tuple(chunk),
+                )
+            )
+        rows.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
+        return rows
+
+    async def fetch_observation_rows(
+        self, observation_ids: list[str], *, entity_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Fetch observations by ID, optionally restricted to one entity.
+
+        Args:
+            observation_ids: Observations to fetch.
+            entity_id: When given, only observations owned by this entity are
+                returned. Applied in SQL so scoping cannot be defeated by
+                truncating the candidate list first.
+        """
+        if not observation_ids:
+            return []
+        rows: list[dict[str, Any]] = []
+        # One variable of the budget is reserved for entity_id when scoping.
+        budget = _MAX_SQL_VARIABLES - (1 if entity_id else 0)
+        for chunk in _chunked(list(dict.fromkeys(observation_ids)), budget):
+            placeholders = ",".join("?" for _ in chunk)
+            sql = f"SELECT * FROM observations WHERE id IN ({placeholders})"
+            params: tuple[object, ...] = tuple(chunk)
+            if entity_id:
+                sql += " AND entity_id = ?"
+                params = (*params, entity_id)
+            rows.extend(await self._require_db().fetch_all(sql, params))
+        return rows
+
     async def resolve_entity_names(self, entity_ids: set[str]) -> dict[str, str]:
         if not entity_ids:
             return {}

@@ -1,6 +1,5 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
 
 // Port the `graph-mem ui --port 8080` dev workflow listens on. The CLI
 // defaults to port 0 (OS-assigned), so a dev proxying to a fixed port must
@@ -8,7 +7,10 @@ import tailwindcss from "@tailwindcss/vite";
 const DEV_API_PORT = 8080;
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  // No Tailwind plugin: globals.css is hand-written and uses zero Tailwind
+  // utility classes, so the plugin only scanned the sources and emitted a
+  // preflight nobody referenced.
+  plugins: [react()],
   build: {
     // Build straight into the Python package rather than into a dist/ that
     // someone then copies by hand. The copy step was how the shipped bundle

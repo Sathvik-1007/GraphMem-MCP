@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,11 +10,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
+from graph_mem.db.connection import Database
+from graph_mem.db.migrations import v001_initial, v002_embedding_cache_pk
 from graph_mem.semantic.embeddings import (
+    _PRUNE_EVERY_N_BATCHES,
     EmbeddingEngine,
     _bytes_to_embedding,
+    _content_hash,
     _embedding_to_bytes,
+    _onnx_backend_available,
 )
+from graph_mem.storage import SQLiteBackend
 from graph_mem.utils.errors import (
     EmbeddingError,
     ModelLoadError,
@@ -24,9 +31,26 @@ from graph_mem.utils.errors import (
 # ---------------------------------------------------------------------------
 
 
-def _make_storage() -> MagicMock:
-    """Return a MagicMock that satisfies StorageBackend async interface."""
+def _make_storage(cached: dict[str, bytes] | None = None) -> MagicMock:
+    """Return a MagicMock that satisfies StorageBackend async interface.
+
+    ``fetch_all`` emulates the embedding_cache table well enough for the
+    engine's batched SELECT/UPDATE/INSERT: cache rows come back for a SELECT,
+    writes return no rows.  Every statement is recorded in ``s.statements``.
+    """
+    rows = cached or {}
     s = MagicMock()
+    s.statements = []
+
+    async def fetch_all(sql: str, params: tuple[object, ...] = ()) -> list[dict[str, object]]:
+        s.statements.append(sql)
+        if sql.lstrip().upper().startswith("SELECT"):
+            return [
+                {"content_hash": h, "embedding": blob} for h, blob in rows.items() if h in params
+            ]
+        return []
+
+    s.fetch_all = fetch_all
     s.get_metadata = AsyncMock(return_value=None)
     s.set_metadata = AsyncMock()
     s.ensure_vec_tables = AsyncMock(return_value=True)
@@ -38,6 +62,10 @@ def _make_storage() -> MagicMock:
     s.upsert_observation_embedding = AsyncMock()
     s.delete_observation_embedding = AsyncMock()
     return s
+
+
+def _statements_starting(storage: MagicMock, keyword: str) -> list[str]:
+    return [s for s in storage.statements if s.lstrip().upper().startswith(keyword)]
 
 
 # ===========================================================================
@@ -145,7 +173,10 @@ class TestLoadModelOnnxSuccess:
         mock_st.SentenceTransformer.return_value = mock_model
 
         with (
-            patch.dict("sys.modules", {"onnxruntime": MagicMock()}),
+            patch(
+                "graph_mem.semantic.embeddings._onnx_backend_available",
+                return_value=True,
+            ),
             patch.dict("sys.modules", {"sentence_transformers": mock_st}),
         ):
             engine._load_model()
@@ -153,6 +184,34 @@ class TestLoadModelOnnxSuccess:
         assert engine._model is mock_model
         assert engine._available is True
         mock_st.SentenceTransformer.assert_called_once_with("test", device="cpu", backend="onnx")
+
+    def test_onnx_skipped_without_optimum(self):
+        """A bare onnxruntime install is not enough — the probe looks for optimum."""
+        engine = EmbeddingEngine(model_name="test", use_onnx=True)
+        mock_model = MagicMock()
+        mock_st = MagicMock()
+        mock_st.SentenceTransformer.return_value = mock_model
+
+        with (
+            patch(
+                "graph_mem.semantic.embeddings._onnx_backend_available",
+                return_value=False,
+            ),
+            patch.dict("sys.modules", {"sentence_transformers": mock_st}),
+        ):
+            engine._load_model()
+
+        # Straight to the PyTorch call: no backend= kwarg anywhere.
+        mock_st.SentenceTransformer.assert_called_once_with("test", device="cpu")
+
+    def test_onnx_probe_false_when_optimum_missing(self):
+        """The probe reports what it claims: optimum.onnxruntime importability."""
+        with patch("importlib.util.find_spec", side_effect=ModuleNotFoundError("optimum")):
+            assert _onnx_backend_available() is False
+        with patch("importlib.util.find_spec", return_value=None):
+            assert _onnx_backend_available() is False
+        with patch("importlib.util.find_spec", return_value=MagicMock()):
+            assert _onnx_backend_available() is True
 
 
 # ===========================================================================
@@ -173,7 +232,10 @@ class TestLoadModelOnnxFallback:
         ]
 
         with (
-            patch.dict("sys.modules", {"onnxruntime": MagicMock()}),
+            patch(
+                "graph_mem.semantic.embeddings._onnx_backend_available",
+                return_value=True,
+            ),
             patch.dict("sys.modules", {"sentence_transformers": mock_st}),
         ):
             engine._load_model()
@@ -492,9 +554,10 @@ class TestEmbedFullPath:
         assert result[1] is not None
         assert len(result[1]) == 4
 
-        # Verify caching happened
-        assert storage.set_cached_embedding.await_count == 2
-        storage.prune_embedding_cache.assert_awaited_once()
+        # Both vectors cached by a single batched INSERT
+        inserts = _statements_starting(storage, "INSERT")
+        assert len(inserts) == 1
+        assert inserts[0].count("(?, ?, ?, ?)") == 2
 
     async def test_embed_uses_cache_hit(self):
         """embed() returns cached embedding without calling model."""
@@ -508,8 +571,7 @@ class TestEmbedFullPath:
         engine._model = mock_model
 
         cached_blob = _embedding_to_bytes([1.0, 2.0, 3.0, 4.0])
-        storage = _make_storage()
-        storage.get_cached_embedding = AsyncMock(return_value=cached_blob)
+        storage = _make_storage({_content_hash("cached text"): cached_blob})
         engine._storage = storage
 
         result = await engine.embed(["cached text"], storage)
@@ -518,6 +580,98 @@ class TestEmbedFullPath:
         assert abs(result[0][0] - 1.0) < 1e-6
         # Model should NOT be called since all texts were cached
         mock_model.encode.assert_not_called()
+
+    async def test_embed_batches_cache_lookups_into_one_query(self):
+        """A batch of texts costs one SELECT, not one per text."""
+        engine = EmbeddingEngine(model_name="test", use_onnx=False)
+        engine._available = True
+        engine._model_loaded = True
+        engine._dimension = 4
+        engine._stored_dimension = 4
+
+        texts = [f"text {i}" for i in range(20)]
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.zeros((20, 4), dtype=np.float32)
+        engine._model = mock_model
+
+        storage = _make_storage()
+        await engine.embed(texts, storage)
+
+        assert len(_statements_starting(storage, "SELECT")) == 1
+        assert len(_statements_starting(storage, "INSERT")) == 1
+
+    async def test_embed_runs_encode_off_the_event_loop(self):
+        """model.encode() must not run on the event loop thread."""
+        engine = EmbeddingEngine(model_name="test", use_onnx=False)
+        engine._available = True
+        engine._model_loaded = True
+        engine._dimension = 4
+        engine._stored_dimension = 4
+
+        seen: list[threading.Thread] = []
+
+        def encode(texts, **kwargs):
+            seen.append(threading.current_thread())
+            return np.zeros((len(texts), 4), dtype=np.float32)
+
+        mock_model = MagicMock()
+        mock_model.encode.side_effect = encode
+        engine._model = mock_model
+
+        await engine.embed(["a", "b"], _make_storage())
+
+        assert seen and seen[0] is not threading.main_thread()
+
+    async def test_cache_hit_refreshes_last_use(self):
+        """A hit updates created_at, which is what makes eviction LRU."""
+        engine = EmbeddingEngine(model_name="test", use_onnx=False)
+        engine._available = True
+        engine._model_loaded = True
+        engine._dimension = 4
+        engine._stored_dimension = 4
+        engine._model = MagicMock()
+
+        storage = _make_storage({_content_hash("warm"): _embedding_to_bytes([1.0, 0.0, 0.0, 0.0])})
+        await engine.embed(["warm"], storage)
+
+        updates = _statements_starting(storage, "UPDATE")
+        assert len(updates) == 1
+        assert "SET created_at = ?" in updates[0]
+
+    async def test_prune_is_amortized(self):
+        """Pruning happens every _PRUNE_EVERY_N_BATCHES batches, not every batch."""
+        engine = EmbeddingEngine(model_name="test", use_onnx=False, cache_size=5)
+        engine._available = True
+        engine._model_loaded = True
+        engine._dimension = 4
+        engine._stored_dimension = 4
+
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.zeros((1, 4), dtype=np.float32)
+        engine._model = mock_model
+
+        storage = _make_storage()
+        for i in range(_PRUNE_EVERY_N_BATCHES - 1):
+            await engine.embed([f"text {i}"], storage)
+        storage.prune_embedding_cache.assert_not_awaited()
+
+        await engine.embed(["last text"], storage)
+        storage.prune_embedding_cache.assert_awaited_once_with(5)
+
+    async def test_embed_rejects_short_model_output(self):
+        """A model returning fewer vectors than texts raises instead of returning None."""
+        engine = EmbeddingEngine(model_name="test", use_onnx=False)
+        engine._available = True
+        engine._model_loaded = True
+        engine._dimension = 4
+        engine._stored_dimension = 4
+
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.zeros((1, 4), dtype=np.float32)
+        engine._model = mock_model
+
+        with pytest.raises(EmbeddingError, match="Model returned 1 vectors for 2 texts"):
+            await engine.embed(["a", "b"], _make_storage())
 
     async def test_embed_first_session_persists_metadata(self):
         """When _stored_dimension is None, embed persists metadata."""
@@ -564,6 +718,134 @@ class TestEmbedFullPath:
 # ===========================================================================
 # Extra: dimension property (line 125)
 # ===========================================================================
+
+
+class TestModelSwapDetection:
+    async def test_initialize_warns_when_model_changed(self, caplog):
+        """A different stored model name is reported, loudly, and left alone."""
+        engine = EmbeddingEngine(model_name="new-model")
+        storage = _make_storage()
+        storage.get_metadata = AsyncMock(
+            side_effect=lambda key: {
+                "embedding_dimension": "384",
+                "embedding_model": "old-model",
+            }.get(key)
+        )
+
+        with caplog.at_level(logging.WARNING, logger="graph_mem.semantic.embeddings"):
+            await engine.initialize(storage)
+
+        assert engine.vectors_stale is True
+        assert engine.stored_model_name == "old-model"
+        message = caplog.text
+        assert "old-model" in message and "new-model" in message
+        assert "stale" in message.lower()
+        # Nothing destructive happened.
+        storage.delete_entity_embedding.assert_not_awaited()
+        storage.delete_observation_embedding.assert_not_awaited()
+
+    async def test_initialize_quiet_when_model_matches(self, caplog):
+        engine = EmbeddingEngine(model_name="same-model")
+        storage = _make_storage()
+        storage.get_metadata = AsyncMock(
+            side_effect=lambda key: {
+                "embedding_dimension": "384",
+                "embedding_model": "same-model",
+            }.get(key)
+        )
+
+        with caplog.at_level(logging.WARNING, logger="graph_mem.semantic.embeddings"):
+            await engine.initialize(storage)
+
+        assert engine.vectors_stale is False
+        assert caplog.text == ""
+
+    async def test_vectors_stale_false_without_stored_model(self):
+        """A database that never recorded a model is not 'stale', just new."""
+        engine = EmbeddingEngine(model_name="anything")
+        await engine.initialize(_make_storage())
+        assert engine.vectors_stale is False
+
+
+# ===========================================================================
+# Embedding cache schema (migration v002) — two models must coexist
+# ===========================================================================
+
+
+class TestEmbeddingCacheSchema:
+    async def test_composite_key_lets_two_models_coexist(self, tmp_path):
+        """Same text, two models: both rows survive and both read back."""
+        backend = SQLiteBackend(tmp_path / "cache.db")
+        await backend.initialize()
+        try:
+            blob_a = _embedding_to_bytes([1.0, 0.0])
+            blob_b = _embedding_to_bytes([0.0, 1.0])
+            h = _content_hash("shared text")
+            await backend.set_cached_embedding(h, blob_a, "model-a", 1.0)
+            await backend.set_cached_embedding(h, blob_b, "model-b", 2.0)
+
+            assert await backend.get_cached_embedding(h, "model-a") == blob_a
+            assert await backend.get_cached_embedding(h, "model-b") == blob_b
+        finally:
+            await backend.close()
+
+    async def test_eviction_is_lru_not_fifo(self, tmp_path):
+        """A re-used entry outlives a newer unused one, as the docs promise."""
+        backend = SQLiteBackend(tmp_path / "lru.db")
+        await backend.initialize()
+        engine = EmbeddingEngine(model_name="test", use_onnx=False)
+        engine._available = True
+        engine._model_loaded = True
+        engine._dimension = 4
+        engine._stored_dimension = 4
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.zeros((1, 4), dtype=np.float32)
+        engine._model = mock_model
+
+        try:
+            with patch(
+                "graph_mem.semantic.embeddings.time.time", side_effect=[100.0, 200.0, 300.0]
+            ):
+                await engine.embed(["old but used"], backend)  # written at t=100
+                await engine.embed(["newer but idle"], backend)  # written at t=200
+                await engine.embed(["old but used"], backend)  # cache hit, touched to t=300
+
+            await backend.prune_embedding_cache(1)
+            rows = await backend.fetch_all("SELECT created_at FROM embedding_cache")
+            assert [r["created_at"] for r in rows] == [300.0]
+        finally:
+            await backend.close()
+
+    async def test_migration_preserves_rows_and_is_idempotent(self, tmp_path):
+        """v002 rebuilds the table without losing v001's cached vectors."""
+        db = Database(tmp_path / "migrate.db")
+        await db.initialize()
+        try:
+            await v001_initial.migrate(db)
+            await db.execute(
+                "INSERT INTO embedding_cache (content_hash, embedding, model_name, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("hash-1", _embedding_to_bytes([0.5, 0.5]), "model-a", 123.0),
+            )
+
+            await v002_embedding_cache_pk.migrate(db)
+            # Second run must be a no-op, not a failure or a data loss.
+            await v002_embedding_cache_pk.migrate(db)
+
+            rows = await db.fetch_all("SELECT * FROM embedding_cache")
+            assert len(rows) == 1
+            assert rows[0]["content_hash"] == "hash-1"
+            assert rows[0]["model_name"] == "model-a"
+            assert rows[0]["created_at"] == 123.0
+
+            pk = [
+                r["name"]
+                for r in await db.fetch_all("PRAGMA table_info(embedding_cache)")
+                if r["pk"]
+            ]
+            assert sorted(pk) == ["content_hash", "model_name"]
+        finally:
+            await db.close()
 
 
 class TestDimensionProperty:

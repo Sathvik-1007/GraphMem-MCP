@@ -426,6 +426,27 @@ class StorageBackend(ABC):
         """
 
     @abstractmethod
+    async def fetch_observation_parents(self, observation_ids: list[str]) -> dict[str, str]:
+        """Map observation IDs to the entity each belongs to."""
+
+    @abstractmethod
+    async def fetch_observations_for_entities(
+        self, entity_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        """Return every observation belonging to any of *entity_ids*, newest first."""
+
+    @abstractmethod
+    async def fetch_observation_rows(
+        self, observation_ids: list[str], *, entity_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Fetch observations by ID, optionally restricted to a single entity.
+
+        The *entity_id* restriction must be applied by the query, not by the
+        caller after the fact — filtering a truncated candidate list is how
+        scoped search silently under-returns.
+        """
+
+    @abstractmethod
     async def resolve_entity_names(self, entity_ids: set[str]) -> dict[str, str]:
         """Batch-resolve entity IDs to names.
 

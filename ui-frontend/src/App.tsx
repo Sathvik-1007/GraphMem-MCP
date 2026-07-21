@@ -13,6 +13,7 @@ import type { GraphInfo } from "./api/client";
 export default function App() {
   const {
     state,
+    truncatedBy,
     selectEntity,
     clearEntity,
     toggleEntityType,
@@ -235,6 +236,21 @@ export default function App() {
         )}
         {state.stats && (
           <div className="title-bar-stats">
+            {truncatedBy !== null && (
+              <>
+                <span
+                  className="title-bar-warning"
+                  title={
+                    `Showing ${state.graph?.entities.length ?? 0} of ` +
+                    `${state.graph?.total_entities ?? 0} entities. Relationships to the ` +
+                    `${truncatedBy} entities not shown are missing from this view.`
+                  }
+                >
+                  Partial view &mdash; {truncatedBy} entities not shown
+                </span>
+                <span className="title-bar-dot" />
+              </>
+            )}
             <span>{state.stats.entity_count} entities</span>
             <span className="title-bar-dot" />
             <span>{state.stats.relationship_count} relations</span>

@@ -7,6 +7,9 @@ Search strategy:
 
 RRF_score(item) = sum(1 / (k + rank_in_method))  where k=60
 
+Fused scores are reported raw, so they top out at ``MAX_RRF_SCORE`` ≈ 0.0164
+and mean the same thing from one query to the next.
+
 The search layer is **storage-agnostic**: it delegates all persistence
 and query operations to a :class:`StorageBackend`.
 """
@@ -54,11 +57,37 @@ class SearchResult(TypedDict, total=False):
     # Optional keys
     observations: list[dict[str, object]]
     relationships: list[_RelationshipEntry]
+    relationships_truncated: bool
 
 
 log = get_logger("semantic.search")
 
 RRF_K = 60  # Standard RRF constant
+
+# Best score one ranked list can contribute: rank 0 → 1 / (RRF_K + 1) ≈ 0.0164.
+# A fused score is a convex combination of two such contributions, so it never
+# exceeds this value either.  Callers picking a ``min_score`` need this number.
+MAX_RRF_SCORE = 1.0 / (RRF_K + 1)
+
+# Each retrieval channel is asked for ``limit * CANDIDATE_MULTIPLIER`` rows so
+# that filtering (entity type, entity scope) and de-duplication across channels
+# still leave enough survivors to fill ``limit``.  3 covers the common case
+# where most of the top hits survive filtering, without making the FTS5 and
+# vector scans meaningfully more expensive.
+CANDIDATE_MULTIPLIER = 3
+
+# Relationships attached to a single search result.  A hub entity can have
+# thousands of edges and the consumer is a language model with a context
+# budget, so the list is capped; results report whether the cap was hit via
+# ``relationships_truncated``.
+MAX_RELATIONSHIPS_PER_RESULT = 20
+
+# Ceiling on the observation-derived score an entity can accumulate, before
+# ``obs_boost_factor`` is applied: exactly what one perfectly-ranked
+# observation is worth.  Without it the boost is an unbounded sum and an
+# entity with ten mediocre observations outranks one with a single perfect
+# match.
+MAX_OBS_BOOST = MAX_RRF_SCORE
 
 
 class HybridSearch:
@@ -99,7 +128,9 @@ class HybridSearch:
 
             query_blob = _embedding_to_bytes(query_vec)
 
-            rows = await self._storage.vector_search(table, query_blob, limit * 3)
+            rows = await self._storage.vector_search(
+                table, query_blob, limit * CANDIDATE_MULTIPLIER
+            )
             for rank, (item_id, _distance) in enumerate(rows):
                 results[item_id] = 1.0 / (RRF_K + rank + 1)
         except (ValueError, EmbeddingError) as exc:
@@ -112,7 +143,7 @@ class HybridSearch:
     async def _fts_entity_search(self, query: str, limit: int) -> dict[str, float]:
         """Run FTS5 search on entities and return ``{id: rrf_score}``."""
         results: dict[str, float] = {}
-        rows = await self._storage.fts_search_entities(query, limit * 3)
+        rows = await self._storage.fts_search_entities(query, limit * CANDIDATE_MULTIPLIER)
         for rank, (entity_id, _rank_score) in enumerate(rows):
             results[entity_id] = 1.0 / (RRF_K + rank + 1)
         return results
@@ -120,7 +151,7 @@ class HybridSearch:
     async def _fts_observation_search(self, query: str, limit: int) -> dict[str, float]:
         """Run FTS5 search on observations and return ``{id: rrf_score}``."""
         results: dict[str, float] = {}
-        rows = await self._storage.fts_search_observations(query, limit * 3)
+        rows = await self._storage.fts_search_observations(query, limit * CANDIDATE_MULTIPLIER)
         for rank, (obs_id, _rank_score) in enumerate(rows):
             results[obs_id] = 1.0 / (RRF_K + rank + 1)
         return results
@@ -133,9 +164,15 @@ class HybridSearch:
     ) -> list[tuple[str, float]]:
         """Combine vector and FTS results using Reciprocal Rank Fusion.
 
-        Scores are **normalized to [0, 1]** by dividing by the maximum
-        fused score.  This makes relevance_score meaningful and
-        comparable across queries.
+        Scores are **raw RRF sums** in ``(0, MAX_RRF_SCORE]`` — a result
+        ranked first by every channel scores ``1 / (RRF_K + 1)`` ≈ 0.0164,
+        and everything below it scores strictly less.  They are absolute:
+        a weak result set produces uniformly small scores, which is what
+        makes a ``min_score`` threshold able to reject one.
+
+        Scores are deliberately *not* divided by the top score.  Doing that
+        gave a lone junk hit a perfect 1.0 and compressed a realistic spread
+        into the top percent, so no threshold could tell the two apart.
 
         Args:
             vec_results: ``{id: rrf_score}`` from vector similarity search.
@@ -144,8 +181,7 @@ class HybridSearch:
                 0.0 = FTS5 only, 1.0 = vector only, 0.5 = equal weight.
 
         Returns:
-            ``[(id, score), ...]`` sorted by descending fused score,
-            normalized to [0, 1].
+            ``[(id, score), ...]`` sorted by descending fused score.
 
         Raises:
             ValueError: If *alpha* is not in ``[0.0, 1.0]``.
@@ -166,12 +202,6 @@ class HybridSearch:
             for item_id in all_ids
         ]
         scored.sort(key=lambda x: x[1], reverse=True)
-
-        # Normalize to [0, 1] so scores are interpretable.
-        max_score = scored[0][1] if scored else 0.0
-        if max_score > 0.0:
-            scored = [(item_id, raw / max_score) for item_id, raw in scored]
-
         return scored
 
     async def _boost_from_observations(
@@ -184,7 +214,14 @@ class HybridSearch:
         """Boost entity scores based on matching observations.
 
         Runs observation search, maps observation scores back to parent
-        entities, and merges with entity-level scores.
+        entities, and merges with entity-level scores.  An entity's
+        observation contribution is summed but clamped to
+        :data:`MAX_OBS_BOOST` — the worth of one perfectly-ranked
+        observation — so quantity of mediocre matches cannot beat quality.
+
+        The result stays on the raw RRF scale of :meth:`_rrf_fuse`: nothing
+        here is re-normalized, so a boosted and an unboosted search produce
+        scores a caller can compare against the same ``min_score``.
 
         Args:
             query: The search query.
@@ -204,25 +241,23 @@ class HybridSearch:
             return entity_scores
 
         # Batch-fetch observations to find parent entity IDs
-        obs_ids = [oid for oid, _ in obs_scored[: limit * 3]]
+        obs_ids = [oid for oid, _ in obs_scored]
         if not obs_ids:
             return entity_scores
 
-        placeholders = ",".join("?" for _ in obs_ids)
-        obs_rows = await self._storage.fetch_all(
-            f"SELECT id, entity_id FROM observations WHERE id IN ({placeholders})",
-            tuple(obs_ids),
-        )
-        obs_to_entity: dict[str, str] = {str(r["id"]): str(r["entity_id"]) for r in obs_rows}
+        obs_to_entity = await self._storage.fetch_observation_parents(obs_ids)
 
-        # Accumulate observation scores per parent entity
+        # Accumulate observation scores per parent entity, capped so that many
+        # weak observations cannot outweigh one strong one.
         obs_entity_scores: dict[str, float] = {}
         for obs_id, obs_score in obs_scored:
             parent_eid = obs_to_entity.get(obs_id)
             if parent_eid:
-                obs_entity_scores[parent_eid] = obs_entity_scores.get(parent_eid, 0.0) + obs_score
+                obs_entity_scores[parent_eid] = min(
+                    obs_entity_scores.get(parent_eid, 0.0) + obs_score, MAX_OBS_BOOST
+                )
 
-        # Merge: entity_score + obs_score * boost_factor
+        # Merge: entity_score + capped obs_score * boost_factor
         entity_score_map = dict(entity_scores)
         all_ids = set(entity_score_map) | set(obs_entity_scores)
 
@@ -234,12 +269,6 @@ class HybridSearch:
             for eid in all_ids
         ]
         merged.sort(key=lambda x: x[1], reverse=True)
-
-        # Re-normalize to [0, 1] after boosting
-        max_score = merged[0][1] if merged else 0.0
-        if max_score > 1.0:
-            merged = [(eid, s / max_score) for eid, s in merged]
-
         return merged
 
     # ── Public search methods ────────────────────────────────────────
@@ -258,7 +287,9 @@ class HybridSearch:
         """Search entities using hybrid vector + FTS5 + RRF.
 
         Returns entities ranked by fused relevance score, with optional
-        observations and direct relationships attached.
+        observations and direct relationships attached.  At most
+        :data:`MAX_RELATIONSHIPS_PER_RESULT` relationships are attached per
+        entity; ``relationships_truncated`` says whether more were dropped.
 
         When *boost_from_observations* is True (default), observation search
         results are used to boost parent entity scores, allowing entities
@@ -272,9 +303,11 @@ class HybridSearch:
             include_observations: Whether to include entity observations.
             boost_from_observations: Use observation matches to boost entity scores.
             obs_boost_factor: Weight multiplier for observation-derived scores.
-            min_score: Minimum relevance score (0.0-1.0) to include in results.
-                Results below this threshold are discarded.  Default 0.0
-                (no filtering).
+            min_score: Minimum raw RRF relevance score to include in results.
+                Scores are small and absolute: an entity ranked first by every
+                channel scores ``MAX_RRF_SCORE`` ≈ 0.0164, plus at most
+                ``obs_boost_factor * MAX_OBS_BOOST`` from observation matches.
+                Default 0.0 (no filtering).
         """
         vec_results = await self._vector_search(query, "entity_embeddings", limit)
         fts_results = await self._fts_entity_search(query, limit)
@@ -293,48 +326,43 @@ class HybridSearch:
             if not scored:
                 return []
 
-        # ── Batch-fetch entities in one query ────────────────────────
-        candidate_ids = [eid for eid, _ in scored[: limit * 3]]
-        if not candidate_ids:
-            return []
-
-        rows = await self._storage.fetch_entity_rows(candidate_ids)
-
-        # Apply type filter if needed
-        if entity_types:
-            type_set = set(entity_types)
-            rows = [r for r in rows if str(r.get("entity_type", "")) in type_set]
-
-        # Build lookup for O(1) access by id
+        # ── Batch-fetch every candidate, then filter, then truncate ──────
+        # Order matters: truncating first and filtering afterwards silently
+        # under-returns whenever the top candidates are of the wrong type
+        # while matching entities rank just below them.
+        rows = await self._storage.fetch_entity_rows([eid for eid, _ in scored])
         row_by_id: dict[str, Any] = {str(r["id"]): r for r in rows}
 
-        # Batch-fetch relationships for all result entities (eliminates N+1)
-        all_entity_ids = [eid for eid, _ in scored[: limit * 3] if eid in row_by_id]
-        all_rels = await self._storage.get_relationships_for_entities(all_entity_ids)
+        if entity_types:
+            type_set = set(entity_types)
+            row_by_id = {
+                eid: r for eid, r in row_by_id.items() if str(r.get("entity_type", "")) in type_set
+            }
+
+        result_ids = [eid for eid, _ in scored if eid in row_by_id][:limit]
+        if not result_ids:
+            return []
+
+        score_by_id = dict(scored)
+
+        # Batch-fetch relationships for the result entities (eliminates N+1)
+        all_rels = await self._storage.get_relationships_for_entities(result_ids)
 
         # ── Batch-fetch observations if requested (eliminates N+1) ────────
         all_obs_by_entity: dict[str, list[dict[str, object]]] = {}
-        if include_observations and all_entity_ids:
-            obs_placeholders = ",".join("?" for _ in all_entity_ids)
-            obs_rows = await self._storage.fetch_all(
-                f"SELECT * FROM observations WHERE entity_id IN ({obs_placeholders}) "
-                "ORDER BY created_at DESC",
-                tuple(all_entity_ids),
-            )
+        if include_observations:
+            obs_rows = await self._storage.fetch_observations_for_entities(result_ids)
             for r in obs_rows:
                 eid = str(r["entity_id"])
                 all_obs_by_entity.setdefault(eid, []).append(Observation.from_row(r).to_dict())
 
         # ── Assemble results in score order ──────────────────────────
         results: list[SearchResult] = []
-        for entity_id, score in scored:
-            if entity_id not in row_by_id:
-                continue
-
+        for entity_id in result_ids:
             entity = Entity.from_row(row_by_id[entity_id])
             entry = SearchResult(
                 **entity.to_dict(),  # type: ignore[typeddict-item]
-                relevance_score=round(score, 6),
+                relevance_score=round(score_by_id[entity_id], 6),
             )
 
             # Attach observations from batch
@@ -354,12 +382,11 @@ class HybridSearch:
                     ),
                     weight=float(r["weight"]),
                 )
-                for r in rel_rows[:20]  # Limit to 20 relationships per entity
+                for r in rel_rows[:MAX_RELATIONSHIPS_PER_RESULT]
             ]
+            entry["relationships_truncated"] = len(rel_rows) > MAX_RELATIONSHIPS_PER_RESULT
 
             results.append(entry)
-            if len(results) >= limit:
-                break
 
         return results
 
@@ -378,9 +405,11 @@ class HybridSearch:
         Args:
             query: The search query.
             limit: Maximum number of results to return.
-            entity_id: Optional — restrict search to this entity.
-            min_score: Minimum relevance score (0.0-1.0) to include in results.
-                Results below this threshold are discarded.  Default 0.0
+            entity_id: Optional — restrict search to this entity.  The scope is
+                applied to every retrieved candidate, not just the top ones.
+            min_score: Minimum raw RRF relevance score to include in results.
+                Scores are small and absolute: an observation ranked first by
+                every channel scores ``MAX_RRF_SCORE`` ≈ 0.0164.  Default 0.0
                 (no filtering).
         """
         vec_results = await self._vector_search(query, "observation_embeddings", limit)
@@ -395,44 +424,36 @@ class HybridSearch:
             if not scored:
                 return []
 
-        # ── Batch-fetch observations ─────────────────────────────────
-        candidate_ids = [oid for oid, _ in scored[: limit * 3]]
-        if not candidate_ids:
-            return []
-
-        # Use raw fetch for observation batch lookup
-        obs_rows = await self._storage.fetch_all(
-            f"SELECT * FROM observations WHERE id IN ({','.join('?' for _ in candidate_ids)})",
-            tuple(candidate_ids),
+        # ── Batch-fetch every candidate, scoped in SQL ───────────────
+        # The entity scope belongs in the query, not in the assembly loop:
+        # filtering after a truncation returned almost nothing whenever the
+        # entity's own observations were not globally top-ranked, which is
+        # precisely the case scoping exists for.
+        candidate_ids = [oid for oid, _ in scored]
+        obs_rows = await self._storage.fetch_observation_rows(
+            candidate_ids, entity_id=entity_id or None
         )
         obs_by_id: dict[str, Any] = {str(r["id"]): r for r in obs_rows}
 
-        # ── Batch-fetch parent entity names ──────────────────────────
+        # ── Batch-fetch parent entity rows (name + type in one query) ─────
         parent_ids = {str(r["entity_id"]) for r in obs_rows}
-        ent_lookup = await self._storage.resolve_entity_names(parent_ids)
-        # Also need entity_type — fetch full rows
-        ent_type_lookup: dict[str, str] = {}
-        if parent_ids:
-            ent_rows = await self._storage.fetch_entity_rows(list(parent_ids))
-            ent_type_lookup = {str(r["id"]): str(r.get("entity_type", "")) for r in ent_rows}
+        ent_rows = await self._storage.fetch_entity_rows(list(parent_ids))
+        ent_lookup = {str(r["id"]): r for r in ent_rows}
 
-        # ── Assemble results in score order ──────────────────────────
+        # ── Assemble results in score order, truncating last ─────────
         results: list[dict[str, Any]] = []
         for obs_id, score in scored:
             row = obs_by_id.get(obs_id)
             if not row:
                 continue
-            if entity_id and str(row["entity_id"]) != entity_id:
-                continue
 
             obs = Observation.from_row(row)
             entry: dict[str, Any] = {**obs.to_dict(), "relevance_score": round(score, 6)}
 
-            parent_eid = str(row["entity_id"])
-            if parent_eid in ent_lookup:
-                entry["entity_name"] = ent_lookup[parent_eid]
-            if parent_eid in ent_type_lookup:
-                entry["entity_type"] = ent_type_lookup[parent_eid]
+            parent = ent_lookup.get(str(row["entity_id"]))
+            if parent is not None:
+                entry["entity_name"] = str(parent["name"])
+                entry["entity_type"] = str(parent.get("entity_type", ""))
 
             results.append(entry)
             if len(results) >= limit:

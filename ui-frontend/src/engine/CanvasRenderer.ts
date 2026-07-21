@@ -61,9 +61,36 @@ function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-/** Detect if current theme is light */
-function isLightTheme(): boolean {
-  return document.documentElement.getAttribute("data-theme") === "light";
+interface ThemeColors {
+  bg: string;
+  grid: string;
+  label: string;
+  labelActive: string;
+  light: boolean;
+}
+
+let themeCache: { key: string; colors: ThemeColors } | null = null;
+
+/**
+ * Theme-dependent canvas colours.
+ *
+ * getComputedStyle() forces a style recalculation, so it must not run per frame.
+ * Reading the data-theme attribute does not, and it is the only thing that
+ * changes these values (useTheme sets it) — so it is used as the cache key and
+ * the CSS variables are re-read only when the theme actually flips.
+ */
+function themeColors(): ThemeColors {
+  const key = document.documentElement.getAttribute("data-theme") ?? "";
+  if (themeCache !== null && themeCache.key === key) return themeCache.colors;
+  const colors: ThemeColors = {
+    bg: cssVar("--canvas-bg") || "#0a0a0b",
+    grid: cssVar("--canvas-grid") || "rgba(255,255,255,0.025)",
+    label: cssVar("--canvas-label") || "rgba(200,199,196,0.7)",
+    labelActive: cssVar("--canvas-label-active") || "#ffffff",
+    light: key === "light",
+  };
+  themeCache = { key, colors };
+  return colors;
 }
 
 /** Main render function — called every animation frame */
@@ -73,8 +100,11 @@ export function render(
   edges: SimEdge[],
   view: ViewTransform,
   state: RenderState,
-  nodeIndex: Map<string, number>,
+  nodeIndex: ReadonlyMap<string, number>,
+  /** Nodes pre-sorted by ascending degree — see ForceEngine.nodesByDegree. */
+  nodesByDegree: readonly SimNode[],
 ): void {
+  const theme = themeColors();
   const dpr = window.devicePixelRatio || 1;
   // Use CSS pixel dimensions (not DPR-scaled canvas.width/height)
   const W = ctx.canvas.width / dpr;
@@ -85,11 +115,11 @@ export function render(
 
   // Clear + background (theme-aware)
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = cssVar("--canvas-bg") || "#0a0a0b";
+  ctx.fillStyle = theme.bg;
   ctx.fillRect(0, 0, W, H);
 
   // Subtle grid
-  drawGrid(ctx, W, H, view);
+  drawGrid(ctx, W, H, view, theme.grid);
 
   // World-space transform
   ctx.save();
@@ -97,9 +127,8 @@ export function render(
   ctx.scale(view.zoom, view.zoom);
   ctx.translate(view.x, view.y);
 
-  const light = isLightTheme();
-  drawEdges(ctx, nodes, edges, view, state, nodeIndex, light);
-  drawNodes(ctx, nodes, view, state, light);
+  drawEdges(ctx, nodes, edges, view, state, nodeIndex, theme.light);
+  drawNodes(ctx, nodesByDegree, view, state, theme);
 
   ctx.restore();
 }
@@ -111,6 +140,7 @@ function drawGrid(
   W: number,
   H: number,
   view: ViewTransform,
+  gridColor: string,
 ): void {
   const sz = 44 * view.zoom;
   if (sz < 4) return; // Don't draw when zoomed out too far
@@ -118,7 +148,7 @@ function drawGrid(
   const ox = (((view.x * view.zoom) % sz) + W / 2) % sz;
   const oy = (((view.y * view.zoom) % sz) + H / 2) % sz;
 
-  ctx.strokeStyle = cssVar("--canvas-grid") || "rgba(255,255,255,0.025)";
+  ctx.strokeStyle = gridColor;
   ctx.lineWidth = 1;
   ctx.beginPath();
   for (let x = ox; x < W; x += sz) {
@@ -140,7 +170,7 @@ function drawEdges(
   edges: SimEdge[],
   view: ViewTransform,
   state: RenderState,
-  nodeIndex: Map<string, number>,
+  nodeIndex: ReadonlyMap<string, number>,
   light: boolean,
 ): void {
   const { hoveredNode, selectedNode, adj } = state;
@@ -200,17 +230,17 @@ function drawEdges(
 
 function drawNodes(
   ctx: CanvasRenderingContext2D,
-  nodes: SimNode[],
+  /** Already sorted by ascending degree, so hubs paint on top of leaves. */
+  sorted: readonly SimNode[],
   view: ViewTransform,
   state: RenderState,
-  light: boolean,
+  theme: ThemeColors,
 ): void {
   const { hoveredNode, selectedNode, selectedAnim } = state;
-  const labelColor = cssVar("--canvas-label") || "rgba(200,199,196,0.7)";
-  const labelActiveColor = cssVar("--canvas-label-active") || "#ffffff";
+  const light = theme.light;
+  const labelColor = theme.label;
+  const labelActiveColor = theme.labelActive;
 
-  // Draw lowest-degree nodes first so hubs appear on top
-  const sorted = [...nodes].sort((a, b) => a.degree - b.degree);
   const maxDegree = sorted.length > 0 ? sorted[sorted.length - 1]!.degree : 0;
 
   for (const nd of sorted) {

@@ -246,7 +246,8 @@ export default function GraphCanvas({
         engine.edges,
         viewRef.current,
         state,
-        engine["idxMap"] as Map<string, number>,
+        engine.nodeIndex,
+        engine.nodesByDegree,
       );
 
       rafRef.current = requestAnimationFrame(frame);

@@ -67,6 +67,13 @@ export default function DetailPanel({
         }) ?? [],
     [entity],
   );
+  const entityMatcher = useMemo(
+    () =>
+      allEntityNames && entity
+        ? buildEntityMatcher(allEntityNames, entity.name)
+        : null,
+    [allEntityNames, entity?.name],
+  );
   const properties = useMemo(() => {
     if (!entity) return [];
     return Object.entries(entity.properties).filter(
@@ -148,8 +155,8 @@ export default function DetailPanel({
                   {observations.map((obs, i) => (
                     <div key={obs.id || i} className="detail-obs-card">
                       <div className="detail-obs-content">
-                        {allEntityNames
-                          ? highlightEntities(obs.content, allEntityNames, entity.name, onNavigate)
+                        {entityMatcher
+                          ? highlightEntities(obs.content, entityMatcher, onNavigate)
                           : obs.content}
                       </div>
                       {obs.source && (
@@ -244,39 +251,77 @@ function RelRow({
 
 // ── Observation text with clickable entity names ──
 
-function highlightEntities(
-  text: string,
+/**
+ * Compiled matcher for entity names inside observation text.
+ *
+ * Built once per (entity list, current entity) via useMemo — it used to be
+ * rebuilt for every observation on every render.
+ */
+interface EntityMatcher {
+  pattern: RegExp;
+  /** lowercased name → the name as stored, for the link target. */
+  canonical: Map<string, string>;
+}
+
+function buildEntityMatcher(
   entityNames: string[],
   currentEntity: string,
-  onNavigate: (name: string) => void,
-): ReactNode {
-  if (entityNames.length === 0) return text;
-
+): EntityMatcher | null {
   const names = entityNames
     .filter((n) => n.toLowerCase() !== currentEntity.toLowerCase())
     .sort((a, b) => b.length - a.length);
-  if (names.length === 0) return text;
+  if (names.length === 0) return null;
 
+  const canonical = new Map<string, string>();
+  for (const n of names) {
+    const k = n.toLowerCase();
+    if (!canonical.has(k)) canonical.set(k, n);
+  }
+
+  // Escape regex metacharacters so a name like `C++` or `a.b` matches literally
+  // instead of corrupting the alternation.
   const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const pattern = new RegExp(`(${escaped.join("|")})`, "gi");
 
+  // Word-boundary lookarounds, not \b: \b is defined relative to \w, so it
+  // misplaces the boundary for names ending or starting in punctuation (`C++`).
+  // "not adjacent to a word character" is the rule we actually want, and it is
+  // what stops a two-letter name like `Go` or `AI` from matching inside every
+  // longer word and shredding the text into hundreds of buttons.
+  //
+  // ponytail: one big alternation, linear in the number of entity names per
+  // match position. Fine at the current GRAPH_FETCH_LIMIT; if observation
+  // rendering ever gets slow, swap it for a trie/Aho-Corasick scan.
+  const pattern = new RegExp(
+    `(?<![A-Za-z0-9_])(?:${escaped.join("|")})(?![A-Za-z0-9_])`,
+    "gi",
+  );
+  return { pattern, canonical };
+}
+
+function highlightEntities(
+  text: string,
+  matcher: EntityMatcher,
+  onNavigate: (name: string) => void,
+): ReactNode {
+  const { pattern, canonical } = matcher;
   const parts: ReactNode[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   let key = 0;
 
+  pattern.lastIndex = 0;
   while ((match = pattern.exec(text)) !== null) {
     if (match.index > lastIndex) {
       parts.push(text.slice(lastIndex, match.index));
     }
     const matched = match[0]!;
-    const canonical = names.find((n) => n.toLowerCase() === matched.toLowerCase()) ?? matched;
+    const target = canonical.get(matched.toLowerCase()) ?? matched;
     parts.push(
       <button
         key={key++}
-        onClick={() => onNavigate(canonical)}
+        onClick={() => onNavigate(target)}
         className="detail-entity-link"
-        title={`Go to ${canonical}`}
+        title={`Go to ${target}`}
       >
         {matched}
       </button>,

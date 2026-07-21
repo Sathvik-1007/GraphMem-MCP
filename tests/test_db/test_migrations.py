@@ -57,12 +57,14 @@ async def _table_exists(db: Database, table_name: str) -> bool:
 
 
 async def test_initial_migration_applies(db: Database) -> None:
-    """After run_migrations(), the current version should be 1."""
+    """After run_migrations(), the schema sits at the newest migration."""
     applied = await run_migrations(db)
     assert applied >= 1
 
+    # Fresh database: every migration was just applied, so the version equals
+    # the number applied. Stays true as migrations are added.
     version = await get_current_version(db)
-    assert version == 1
+    assert version == applied
 
 
 async def test_migrations_idempotent(db: Database) -> None:
