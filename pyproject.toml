@@ -3,8 +3,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "graph-mem"
-version = "0.1.0"
+name = "graphmem-mcp"
+# Single source of truth: read from graph_mem.__version__ so the package
+# metadata and the runtime constant cannot drift apart.
+dynamic = ["version"]
 description = "Production-grade Graph-RAG MCP server with local embeddings — persistent knowledge graphs for any LLM-powered CLI agent"
 readme = "README.md"
 license = "MIT"
@@ -12,7 +14,18 @@ requires-python = ">=3.10"
 authors = [
     { name = "graph-mem contributors" },
 ]
-keywords = ["mcp", "graph-mem", "knowledge-graph", "embeddings", "sqlite", "llm"]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "knowledge-graph",
+    "graph-rag",
+    "memory",
+    "agent-memory",
+    "embeddings",
+    "semantic-search",
+    "sqlite",
+    "llm",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -24,6 +37,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Database :: Database Engines/Servers",
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
 ]
 dependencies = [
     "mcp>=1.0",
@@ -61,6 +77,9 @@ Homepage = "https://github.com/Sathvik-1007/GraphMem-MCP"
 Documentation = "https://github.com/Sathvik-1007/GraphMem-MCP#readme"
 Repository = "https://github.com/Sathvik-1007/GraphMem-MCP"
 Issues = "https://github.com/Sathvik-1007/GraphMem-MCP/issues"
+
+[tool.hatch.version]
+path = "src/graph_mem/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/graph_mem"]

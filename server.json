@@ -1,0 +1,45 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Sathvik-1007/graphmem-mcp",
+  "title": "Graph-Mem",
+  "description": "Persistent knowledge-graph memory for AI agents. Entities, relationships, and observations in local SQLite with hybrid semantic + full-text search. No API keys.",
+  "version": "0.2.0",
+  "repository": {
+    "url": "https://github.com/Sathvik-1007/GraphMem-MCP",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/Sathvik-1007/GraphMem-MCP#readme",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "graphmem-mcp",
+      "version": "0.2.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "GRAPHMEM_DB_PATH",
+          "description": "Path to the SQLite database file. Defaults to .graphmem/graph.db relative to the working directory.",
+          "isRequired": false
+        },
+        {
+          "name": "GRAPHMEM_EMBEDDING_MODEL",
+          "description": "sentence-transformers model ID used for semantic search. Defaults to all-MiniLM-L6-v2, downloaded on first use.",
+          "isRequired": false
+        },
+        {
+          "name": "GRAPHMEM_TRAVERSAL_NODE_BUDGET",
+          "description": "Maximum entities visited by a single graph traversal. Defaults to 5000.",
+          "isRequired": false
+        },
+        {
+          "name": "GRAPHMEM_LOG_LEVEL",
+          "description": "Logging verbosity: DEBUG, INFO, WARNING, ERROR, or CRITICAL. Defaults to WARNING.",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}

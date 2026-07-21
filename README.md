@@ -1,5 +1,7 @@
 # Graph-Mem MCP
 
+<!-- mcp-name: io.github.Sathvik-1007/graphmem-mcp -->
+
 > Persistent knowledge graph memory for AI agents and IDEs
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -67,7 +69,7 @@ Vector search finds _similar_ things. Graphs find _connected_ things. When an ag
 **1. Install:**
 
 ```bash
-pip install graph-mem
+pip install graphmem-mcp
 ```
 
 **2. Install the skill for your agent:**
@@ -134,7 +136,7 @@ Paste this into your agent's chat to get started immediately:
 ```
 I want you to give yourself persistent memory using graph-mem. Run the following:
 
-pip install graph-mem
+pip install graphmem-mcp
 graph-mem install claude    # or: opencode, codex, gemini, cursor, windsurf, amp,
                             #     antigravity, copilot, kiro, roocode, continue, droid
 
@@ -171,14 +173,14 @@ duplicates. Be specific with entity names and types.
 ### Option 1: pip (Recommended)
 
 ```bash
-pip install graph-mem
+pip install graphmem-mcp
 graph-mem server
 ```
 
 ### Option 2: uvx (zero pre-install)
 
 ```bash
-uvx graph-mem server
+uvx --from graphmem-mcp graph-mem server
 ```
 
 `uvx` downloads the package into an isolated environment and runs it in one command. Nothing to pre-install beyond [uv](https://docs.astral.sh/uv/).
@@ -195,10 +197,10 @@ graph-mem server
 ### Optional extras
 
 ```bash
-pip install "graph-mem[embeddings]"   # sentence-transformers for local embeddings
-pip install "graph-mem[onnx]"         # ONNX runtime for embedding inference
-pip install "graph-mem[ui]"           # aiohttp for interactive graph visualisation
-pip install "graph-mem[full]"         # all of the above
+pip install "graphmem-mcp[embeddings]"   # sentence-transformers for local embeddings
+pip install "graphmem-mcp[onnx]"         # ONNX runtime for embedding inference
+pip install "graphmem-mcp[ui]"           # aiohttp for interactive graph visualisation
+pip install "graphmem-mcp[full]"         # all of the above
 ```
 
 ---

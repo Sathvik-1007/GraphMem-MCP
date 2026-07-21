@@ -102,6 +102,10 @@ class Database:
         # itself against _txn_owner, so they need no further synchronisation.
         self._txn_owner: asyncio.Task[Any] | None = None
         self._txn_depth = 0
+        # Set when the transaction state became unknown and could not be
+        # recovered; see _poison. Non-None means every further query fails
+        # fast with this reason rather than with a confusing SQLite error.
+        self._unusable_reason: str | None = None
 
     @property
     def vec_loaded(self) -> bool:
@@ -113,9 +117,18 @@ class Database:
         return self._path
 
     @property
+    def usable(self) -> bool:
+        """Whether the connection is open and in a known-good state."""
+        return self._conn is not None and self._unusable_reason is None
+
+    @property
     def conn(self) -> aiosqlite.Connection:
         if self._conn is None:
             raise DatabaseError("Database not initialized. Call initialize() first.")
+        if self._unusable_reason is not None:
+            raise DatabaseError(
+                f"Database connection is unusable ({self._unusable_reason}). Close and reopen it."
+            )
         return self._conn
 
     async def initialize(self) -> None:
@@ -182,6 +195,7 @@ class Database:
         conn, self._conn = self._conn, None
         self._txn_owner = None
         self._txn_depth = 0
+        self._unusable_reason = None
         if conn is None:
             return
         try:
@@ -286,8 +300,10 @@ class Database:
             committing: ``True`` to commit/release, ``False`` to roll back.
 
         Raises:
-            DatabaseError: Committing failed. The transaction is rolled back
-                first, so the connection is always left clean.
+            DatabaseError: Finalising failed. The recovery rollback is attempted
+                first; if it succeeds the connection is clean and reusable. If
+                it also fails, the connection is marked unusable — see
+                :meth:`_poison`.
         """
         try:
             if is_outermost:
@@ -301,19 +317,49 @@ class Database:
                 await self.conn.execute(f"ROLLBACK TO {savepoint}")
                 await self.conn.execute(f"RELEASE {savepoint}")
         except sqlite3.Error as exc:
-            # Finalisation failed — most often a disk or lock error. Abandon
-            # the whole transaction rather than leave the connection holding a
-            # half-finished one that the next caller would inherit.
+            # Finalisation failed — most often a disk or lock error. Try to
+            # abandon the whole transaction rather than leave the connection
+            # holding a half-finished one that the next caller would inherit.
             log.error("Failed to %s transaction: %s", "commit" if committing else "roll back", exc)
-            with contextlib.suppress(sqlite3.Error):
+            try:
                 await self.conn.execute("ROLLBACK")
+            except sqlite3.Error as rollback_exc:
+                # A failed recovery rollback is not itself proof of trouble:
+                # "cannot rollback - no transaction is active" means SQLite has
+                # already unwound, which is the outcome we wanted. So ask
+                # SQLite what is true rather than inferring it from the error.
+                log.warning("Recovery rollback reported: %s", rollback_exc)
+
+            # in_transaction is the authority. If a transaction is still open
+            # here we could neither finalise nor abandon it, so the state is
+            # genuinely unknown. Handing the write lock back in that condition
+            # was a real defect: the next BEGIN IMMEDIATE failed with "cannot
+            # start a transaction within a transaction", and so did every write
+            # after it, with nothing explaining why.
+            still_open = self._conn is not None and self._conn.in_transaction
+
             self._reset_transaction_state(is_outermost)
+            if still_open:
+                self._poison(f"transaction could not be finalised or rolled back: {exc}")
             raise DatabaseError(f"Failed to finalise transaction: {exc}") from exc
         else:
             if is_outermost:
                 self._reset_transaction_state(is_outermost=True)
             else:
                 self._txn_depth -= 1
+
+    def _poison(self, reason: str) -> None:
+        """Mark the connection unusable after an unrecoverable failure.
+
+        Reached only when a transaction could neither be finalised nor rolled
+        back, which leaves SQLite's transaction state unknown to us. Continuing
+        to serve queries would produce confusing downstream errors — the
+        original symptom was every later write failing with "cannot start a
+        transaction within a transaction". Failing fast with the real reason is
+        recoverable: the caller closes and reopens the database.
+        """
+        self._unusable_reason = reason
+        log.error("Database connection marked unusable: %s", reason)
 
     def _reset_transaction_state(self, is_outermost: bool) -> None:
         """Return to the no-transaction-open state and hand back the lock."""

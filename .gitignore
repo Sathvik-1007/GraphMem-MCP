@@ -27,3 +27,6 @@ scorecard.png
 ui-frontend/node_modules/
 ui-frontend/dist/
 agent-skill-creator/
+
+# Hypothesis example database — machine-local, not part of the project.
+.hypothesis/
