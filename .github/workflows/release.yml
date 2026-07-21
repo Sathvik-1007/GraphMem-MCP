@@ -149,8 +149,12 @@ jobs:
         with:
           name: dist
           path: dist/
-      # Trusted publishing: no API token is stored anywhere. Configure the
-      # publisher once at https://pypi.org/manage/project/graphmem-mcp/settings/publishing/
+      # Trusted publishing: no API token is stored anywhere.
+      #
+      # Before the FIRST release the project does not exist on PyPI, so its
+      # settings page 404s — create a *pending* publisher at
+      # https://pypi.org/manage/account/publishing/ instead. It becomes a normal
+      # publisher on the first successful upload. See CONTRIBUTING.md.
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 

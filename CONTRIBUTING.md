@@ -187,10 +187,26 @@ Release. Nothing is uploaded by hand.
 
 Both publishers use OIDC, so **no API token is ever stored in this repository**.
 
-1. **PyPI trusted publishing** — at
-   <https://pypi.org/manage/project/graphmem-mcp/settings/publishing/>, add a
-   GitHub publisher: owner `Sathvik-1007`, repository `GraphMem-MCP`, workflow
-   `release.yml`, environment `pypi`.
+1. **PyPI trusted publishing.** Which page you need depends on whether the
+   project exists on PyPI yet:
+
+   - **First ever release** — the project does not exist, so the per-project
+     settings page returns 404. Create a *pending* publisher instead, at
+     <https://pypi.org/manage/account/publishing/> (Your account → Publishing).
+     A pending publisher reserves the name and converts into a normal one the
+     moment the first upload succeeds.
+   - **Any later release** — the project exists, so use its own settings page:
+     <https://pypi.org/manage/project/graphmem-mcp/settings/publishing/>.
+
+   Either way the values are the same:
+
+   | Field | Value |
+   |-------|-------|
+   | PyPI Project Name | `graphmem-mcp` |
+   | Owner | `Sathvik-1007` |
+   | Repository name | `GraphMem-MCP` |
+   | Workflow name | `release.yml` |
+   | Environment name | `pypi` |
 2. **GitHub environment** — create an environment named `pypi` in the repository
    settings. Add required reviewers if you want a human gate before upload.
 3. **MCP Registry** — nothing to configure. The namespace
