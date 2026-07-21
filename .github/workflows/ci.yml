@@ -116,17 +116,27 @@ jobs:
       - name: Verify packaged data resolves from an installed wheel
         run: |
           cd /tmp
-          python -c "
+          python - <<'PY'
+          import importlib.resources
+          import pathlib
+
           from graph_mem.cli.install import _assemble_skill_content
-          content = _assemble_skill_content(None)
-          assert len(content) > 10000, f'skill content is only {len(content)} chars — the bundled skill did not resolve'
-          print(f'Bundled skill resolved: {len(content)} chars')
-          "
-          python -c "
-          from graph_mem.ui.server import _resolve_frontend_dir
-          assert _resolve_frontend_dir() is not None, 'bundled frontend did not resolve from the wheel'
-          print('Bundled frontend resolved')
-          "
+
+          # This checks that the *data files* made it into the wheel, so it
+          # resolves the frontend directory directly instead of importing
+          # graph_mem.ui.server — that module needs aiohttp, an optional extra
+          # a bare wheel install does not have, and importing it here failed
+          # the build for a reason that had nothing to do with packaging.
+          skill = _assemble_skill_content("general")
+          assert len(skill) > 15_000, f"bundled skill is only {len(skill)} chars"
+
+          frontend = pathlib.Path(str(importlib.resources.files("graph_mem.ui") / "frontend"))
+          assert (frontend / "index.html").is_file(), f"no index.html under {frontend}"
+          assets = list((frontend / "assets").glob("*.js"))
+          assert assets, f"no JS bundle under {frontend / 'assets'}"
+
+          print(f"Wheel is complete: skill {len(skill)} chars, frontend {len(assets)} bundle(s)")
+          PY
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
