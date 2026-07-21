@@ -16,7 +16,7 @@ pytest
 1. **Fork and clone** the repository
 2. **Create a branch** from `master` for your work
 3. **Make your changes** — follow the code style below
-4. **Run the gates** — all 894 tests, plus mypy and ruff, must pass
+4. **Run the gates** — all 1055 tests, plus mypy and ruff, must pass
 5. **Run linting** — code must pass `ruff check` and `ruff format --check`
 6. **Submit a pull request** against `master`
 
@@ -174,6 +174,66 @@ section and that unrelated content in the file survives.
 
 The agent table in the README lists every path with its citation. Keep it in
 step — it is the table users read before trusting the installer.
+
+---
+
+## Releasing
+
+Tagging is the whole release. `\.github/workflows/release.yml` verifies, builds,
+publishes to PyPI, registers with the official MCP Registry, and cuts a GitHub
+Release. Nothing is uploaded by hand.
+
+### One-time setup
+
+Both publishers use OIDC, so **no API token is ever stored in this repository**.
+
+1. **PyPI trusted publishing** — at
+   <https://pypi.org/manage/project/graphmem-mcp/settings/publishing/>, add a
+   GitHub publisher: owner `Sathvik-1007`, repository `GraphMem-MCP`, workflow
+   `release.yml`, environment `pypi`.
+2. **GitHub environment** — create an environment named `pypi` in the repository
+   settings. Add required reviewers if you want a human gate before upload.
+3. **MCP Registry** — nothing to configure. The namespace
+   `io.github.Sathvik-1007/*` is proven by the workflow's own GitHub identity.
+
+### Cutting a release
+
+```bash
+# 1. Update the version in ONE place — pyproject reads it from here.
+$EDITOR src/graph_mem/__init__.py        # __version__ = "0.3.0"
+
+# 2. Match it in the registry manifest (two places in the file).
+$EDITOR server.json                      # "version" and packages[].version
+
+# 3. Write the changelog entry. The release notes are generated from it.
+$EDITOR CHANGELOG.md                     # ## [0.3.0] — YYYY-MM-DD
+
+# 4. Rebuild the frontend if you touched ui-frontend/.
+npm run build --prefix ui-frontend
+
+# 5. Commit, tag, push.
+git commit -am "release: 0.3.0"
+git tag v0.3.0
+git push origin master --tags
+```
+
+### What the workflow refuses to release
+
+Each check guards a way a release can ship something other than what the tag
+claims:
+
+| Check | Catches |
+|-------|---------|
+| Tag, `__version__`, and `server.json` must agree | A tag that publishes a different version than it names |
+| Lint, types, and the full test suite | The obvious |
+| Frontend bundle matches a fresh build | Shipping a bundle built from source that no longer exists |
+| README carries the `mcp-name` marker | Registry rejecting the server *after* PyPI upload, which cannot be undone |
+| Bundled skill and frontend resolve from the installed wheel | Packaging paths that work in a checkout and nowhere else |
+| PyPI release is visible before registering | Registering a version the registry cannot verify yet |
+
+A PyPI version number can never be reused. The marker and wheel-completeness
+checks exist because both failures are only discoverable *after* an upload that
+cannot be taken back.
 
 ---
 

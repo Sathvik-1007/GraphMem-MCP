@@ -1,17 +1,106 @@
 name: Release
 
+# Tagging vX.Y.Z publishes that version to PyPI, registers it with the official
+# MCP Registry, and cuts a GitHub Release.
+#
+# The checks below exist because each one guards a way a release can ship
+# something other than what the tag claims: a stale frontend bundle, a version
+# that disagrees with the tag, or a registry entry pointing at a package
+# version that was never published.
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
 
 jobs:
-  build:
-    name: Build
+  verify:
+    name: Verify the tag is releasable
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui-frontend/package-lock.json
+
+      # A tag that disagrees with the version is the single most common way to
+      # publish the wrong thing. Three files must agree: the git tag,
+      # graph_mem.__version__ (which pyproject reads), and server.json.
+      - name: Tag, package version, and server.json must agree
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, re, sys
+
+          tag = os.environ["TAG"].lstrip("v")
+          init = pathlib.Path("src/graph_mem/__init__.py").read_text()
+          pkg = re.search(r'__version__ = "([^"]+)"', init).group(1)
+          manifest = json.loads(pathlib.Path("server.json").read_text())
+
+          problems = []
+          if pkg != tag:
+              problems.append(f"tag {tag!r} != graph_mem.__version__ {pkg!r}")
+          if manifest["version"] != tag:
+              problems.append(f"tag {tag!r} != server.json version {manifest['version']!r}")
+          for package in manifest["packages"]:
+              if package["version"] != tag:
+                  problems.append(
+                      f"tag {tag!r} != server.json packages[].version {package['version']!r}"
+                  )
+          if problems:
+              sys.exit("Version mismatch:\n  " + "\n  ".join(problems))
+          print(f"All version declarations agree on {tag}")
+          PY
+
+      - name: Install dependencies
+        run: pip install -e ".[full,dev]"
+
+      - name: Lint, type-check, and test
+        run: |
+          ruff check src/ tests/ benchmarks/
+          ruff format --check src/ tests/ benchmarks/
+          mypy src/graph_mem
+          pytest -q
+
+      # The wheel ships a prebuilt bundle. Releasing without this check can
+      # publish a bundle built from source that no longer exists.
+      - name: Frontend bundle must match its source
+        run: |
+          npm ci --prefix ui-frontend
+          npm run build --prefix ui-frontend
+          if ! git diff --quiet -- src/graph_mem/ui/frontend; then
+            echo "::error::The committed frontend bundle differs from a fresh build."
+            git diff --stat -- src/graph_mem/ui/frontend
+            exit 1
+          fi
+
+      # The registry verifies ownership by finding this marker in the PyPI long
+      # description, which is the README. Without it, publishing is rejected
+      # after the package is already on PyPI and cannot be re-uploaded.
+      - name: README carries the MCP ownership marker
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+
+          name = json.loads(pathlib.Path("server.json").read_text())["name"]
+          marker = f"mcp-name: {name}"
+          if marker not in pathlib.Path("README.md").read_text():
+              sys.exit(f"README.md is missing the ownership marker: {marker}")
+          print(f"Found ownership marker for {name}")
+          PY
+
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    needs: verify
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,52 +110,132 @@ jobs:
         run: pip install build
       - name: Build sdist and wheel
         run: python -m build
+
+      # Installing from the built wheel is the only way to catch packaging
+      # paths that resolve in a source checkout and nowhere else.
+      - name: Packaged data must resolve from the installed wheel
+        run: |
+          python -m venv /tmp/relcheck
+          /tmp/relcheck/bin/pip install --quiet dist/*.whl
+          cd /tmp
+          /tmp/relcheck/bin/graph-mem --version
+          /tmp/relcheck/bin/python - <<'PY'
+          from graph_mem.cli.install import _assemble_skill_content
+          from graph_mem.ui.server import _resolve_frontend_dir
+
+          skill = _assemble_skill_content("general")
+          assert len(skill) > 15_000, f"bundled skill is only {len(skill)} chars"
+          assert _resolve_frontend_dir() is not None, "bundled frontend did not resolve"
+          print(f"Wheel is complete: skill {len(skill)} chars, frontend present")
+          PY
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
 
-  test:
-    name: Test before release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - name: Install and test
-        run: |
-          pip install -e ".[full,dev]"
-          pytest tests/ -x -q --tb=short
-
   publish-pypi:
     name: Publish to PyPI
     runs-on: ubuntu-latest
-    needs: [build, test]
+    needs: build
     environment:
       name: pypi
-      url: https://pypi.org/p/graph-mem
+      url: https://pypi.org/p/graphmem-mcp
+    permissions:
+      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
+      # Trusted publishing: no API token is stored anywhere. Configure the
+      # publisher once at https://pypi.org/manage/project/graphmem-mcp/settings/publishing/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-registry:
+    name: Publish to the MCP Registry
+    runs-on: ubuntu-latest
+    needs: publish-pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the registry publisher
+        run: |
+          curl -sSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/').tar.gz" \
+            | tar xz mcp-publisher
+          chmod +x mcp-publisher
+
+      # The registry checks that the PyPI package really contains the ownership
+      # marker, so this must run after the PyPI upload has become visible.
+      - name: Wait for the release to appear on PyPI
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import json, os, sys, time, urllib.error, urllib.request
+
+          version = os.environ["TAG"].lstrip("v")
+          url = "https://pypi.org/pypi/graphmem-mcp/json"
+          for attempt in range(30):
+              try:
+                  with urllib.request.urlopen(url, timeout=15) as response:
+                      if version in json.load(response)["releases"]:
+                          print(f"graphmem-mcp {version} is on PyPI")
+                          sys.exit(0)
+              except urllib.error.HTTPError as exc:
+                  if exc.code != 404:
+                      raise
+              print(f"not visible yet (attempt {attempt + 1}); waiting")
+              time.sleep(10)
+          sys.exit(f"graphmem-mcp {version} never appeared on PyPI")
+          PY
+
+      # GitHub OIDC: the namespace io.github.Sathvik-1007/* is proven by this
+      # workflow's identity, so no long-lived credential is stored.
+      - name: Authenticate with the registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        run: ./mcp-publisher publish
 
   github-release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    needs: publish-pypi
+    needs: publish-registry
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Tag names reach these steps through the environment, never interpolated
+      # into a shell command, so a crafted tag cannot inject shell syntax.
+      - name: Extract this version's changelog section
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os, pathlib, re
+
+          version = os.environ["TAG"].lstrip("v")
+          changelog = pathlib.Path("CHANGELOG.md").read_text()
+          match = re.search(
+              rf"## \[{re.escape(version)}\].*?\n(.*?)(?=\n## \[|\Z)", changelog, re.S
+          )
+          notes = match.group(1).strip() if match else "See CHANGELOG.md for details."
+          pathlib.Path("release-notes.md").write_text(notes)
+          print(f"Release notes: {len(notes)} characters")
+          PY
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
-            --generate-notes
+          gh release create "$TAG" --title "$TAG" --notes-file release-notes.md

@@ -4,10 +4,23 @@
 
 > Persistent knowledge graph memory for AI agents and IDEs
 
+[![PyPI](https://img.shields.io/pypi/v/graphmem-mcp.svg)](https://pypi.org/project/graphmem-mcp/)
+[![CI](https://github.com/Sathvik-1007/GraphMem-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/Sathvik-1007/GraphMem-MCP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org)
+[![MCP](https://img.shields.io/badge/MCP-server-purple.svg)](https://modelcontextprotocol.io)
 
 Graph-Mem MCP is a universal MCP server that gives any agent or IDE persistent, structured memory through a knowledge graph. It combines graph storage, semantic vector search, and multi-hop traversal in a single package — install it, add it to your MCP config, and your agent gains memory that survives across sessions. It works everywhere MCP does.
+
+### Built To Be Trusted With Your Data
+
+| | |
+|---|---|
+| **1055 tests** | Property-based against a brute-force reference, plus fuzzing on every parser |
+| **mypy strict** | Clean, enforced in CI — not just configured |
+| **Authenticated UI** | Host + Origin allow-lists and a session token; a cross-origin write is a `403`, verified against a running server |
+| **Bounded** | Every traversal, search, and list response has a named, configurable cap and reports truncation |
+| **Honest docs** | Performance claims come with measurements and a reproducible benchmark; [known gaps](docs/ARCHITECTURE.md#known-gaps) are written down |
 
 ### Works With
 
@@ -71,6 +84,17 @@ Vector search finds _similar_ things. Graphs find _connected_ things. When an ag
 ```bash
 pip install graphmem-mcp
 ```
+
+Or run it without installing — `uvx` fetches and isolates it the way `npx`
+does for Node:
+
+```bash
+uvx --from graphmem-mcp graph-mem server
+```
+
+Listed in the [official MCP Registry](https://github.com/modelcontextprotocol/registry)
+as `io.github.Sathvik-1007/graphmem-mcp`, so MCP-aware clients can discover and
+install it directly.
 
 **2. Install the skill for your agent:**
 

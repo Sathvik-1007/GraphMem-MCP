@@ -149,7 +149,7 @@ unusable under load. Every one was reproduced before and after the fix.
 
 ### Testing
 
-520 tests to 918. Warnings are errors — the previous configuration silenced the
+520 tests to 1055. Warnings are errors — the previous configuration silenced the
 aiosqlite worker-thread exception warning, which was hiding a real connection
 leak. Every fix carries a test that fails without it, verified by reverting.
 

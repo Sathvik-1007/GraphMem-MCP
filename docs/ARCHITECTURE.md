@@ -237,3 +237,38 @@ Gates, all enforced in CI:
 
 Every bug fix carries a test that fails without the fix. Where a defect was
 originally reproduced with a script, the reproduction became the test.
+
+**1055 tests, 89% line coverage.**
+
+Beyond example-based tests, two techniques earn their place:
+
+- **Property tests against a brute-force reference.** `tests/test_property/`
+  generates random graphs with hypothesis and checks the real traversal against
+  an obviously-correct BFS written independently in the test file: same
+  reachable set, same minimum depths, every returned path actually walkable,
+  every returned shortest path minimal. An implementation can be subtly wrong in
+  ways no hand-written example happens to hit.
+- **Fuzzing the parsers.** The FTS5 sanitiser takes arbitrary user text into a
+  `MATCH` clause, and graph names become filesystem paths. Both are fuzzed with
+  the invariant that there are only two acceptable outcomes — a valid result, or
+  a clean rejection — never an escaped exception and never a path outside
+  `.graphmem/`.
+
+**Mutation testing** was used to check the tests themselves, by breaking each
+critical fix in turn and confirming the suite goes red: the collation guard, the
+merge self-loop guard, the write lock, the graph-name grammar, the UI token and
+Origin checks, the limit clamp, the migration applied-set, and deterministic
+name resolution were all caught. A test that passes whether or not the code is
+correct documents nothing.
+
+### Known gaps
+
+Stated rather than left for someone to discover:
+
+- `cli/main.py` (72%), `ui/server.py` (55%), and `ui/routes.py` (75%) are the
+  least-covered modules. The CLI is exercised end-to-end only for `install` and
+  `--help`.
+- The frontend has no test runner. It is type-checked and built in CI; nothing
+  verifies its behaviour.
+- The audit that produced several of the fixes above was performed by the
+  author, not independently.
