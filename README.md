@@ -443,7 +443,7 @@ All server options:
 | `--host` | Bind address (SSE/HTTP only) | `127.0.0.1` |
 | `--port` | Port (SSE/HTTP only) | `8080` |
 | `--embedding-model` | HuggingFace model ID for embeddings | `all-MiniLM-L6-v2` |
-| `--use-onnx / --no-onnx` | Force ONNX runtime on/off | auto-detect |
+| `--use-onnx / --no-onnx` | Use the ONNX embedding backend (needs `optimum[onnxruntime]`) | off |
 | `--embedding-device` | `cpu` or `cuda` | `cpu` |
 | `--cache-size` | Embedding LRU cache max entries | `10000` |
 | `--search-limit` | Default max results for `search_nodes` | `10` |

@@ -142,7 +142,7 @@ def cli() -> None:
     "--use-onnx/--no-onnx",
     "use_onnx",
     default=None,
-    help="Force ONNX runtime on/off for embeddings (default: auto-detect).",
+    help="Use the ONNX backend for embeddings. Off by default; needs optimum[onnxruntime].",
 )
 @click.option(
     "--embedding-device",
@@ -293,8 +293,8 @@ def install(agent: str, scope: str, project_dir: str | None, domain: str) -> Non
     \b
     It does NOT write any MCP configuration. Registering the server stays
     your job; add this to AGENT's own MCP config:
-        {"mcpServers": {"graphmem-mcp": {"command": "graph-mem",
-                                         "args": ["server"]}}}
+        {"mcpServers": {"graph-mem": {"command": "graph-mem",
+                                      "args": ["server"]}}}
     The same snippet is under "MCP Configuration" in the installed document.
 
     Use --domain to include a domain-specific overlay (code for software
@@ -319,7 +319,7 @@ def install(agent: str, scope: str, project_dir: str | None, domain: str) -> Non
             f"  No MCP config was written — add graph-mem to {agent}'s MCP config yourself:",
             fg="yellow",
         )
-        click.echo('    {"mcpServers": {"graphmem-mcp": {"command": "graph-mem", ')
+        click.echo('    {"mcpServers": {"graph-mem": {"command": "graph-mem", ')
         click.echo('                                     "args": ["server"]}}}')
     except GraphMemError as exc:
         log.debug("Install command failed: %s", exc, exc_info=True)
