@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -10,9 +10,12 @@ from graph_mem.cli.install import (
     _FALLBACK_SKILL,
     _SECTION_BEGIN,
     _SECTION_END,
+    AGENTS,
     SUPPORTED_AGENTS,
     _assemble_skill_content,
+    _effective_method,
     _resolve_skill_dir,
+    _resolve_target,
     _skill_dir_candidates,
     install_skill,
     uninstall_skill,
@@ -345,3 +348,176 @@ class TestSkillResolution:
     def test_unknown_domain_falls_back_to_general(self) -> None:
         """An unrecognised domain is not an error, but it is not silent either."""
         assert _assemble_skill_content("nonsense") == _assemble_skill_content("general")
+
+
+# ── Registry invariants ──────────────────────────────────────────────────────
+
+
+class TestRegistryInvariants:
+    """Properties of the agent registry itself.
+
+    The install/uninstall tests above assert that a file lands where the
+    registry says it lands, which cannot catch a *wrong* registry entry — it
+    only re-asserts the constant. These check the things that are checkable
+    without knowing each vendor's convention: that the two lists agree, that
+    nothing escapes its root, and that scope-dependent fields are consistent.
+    """
+
+    def test_supported_agents_and_agents_agree(self) -> None:
+        """Every advertised agent is installable, and nothing is hidden."""
+        assert set(SUPPORTED_AGENTS) == set(AGENTS)
+        assert len(SUPPORTED_AGENTS) == len(AGENTS)
+
+    @pytest.mark.parametrize("agent", SUPPORTED_AGENTS)
+    def test_paths_are_relative_and_do_not_escape(self, agent: str) -> None:
+        """No registry path may be absolute, home-anchored, or contain ``..``."""
+        cfg = AGENTS[agent]
+        for label, rel in (("project", cfg.project_path), ("global", cfg.global_path)):
+            if rel is None:
+                continue
+            parts = PurePosixPath(rel)
+            assert not parts.is_absolute(), f"{agent} {label} path is absolute: {rel}"
+            assert not rel.startswith("~"), f"{agent} {label} path is home-anchored: {rel}"
+            assert ".." not in parts.parts, f"{agent} {label} path escapes: {rel}"
+
+    @pytest.mark.parametrize("agent", SUPPORTED_AGENTS)
+    def test_project_target_resolves_inside_the_project(
+        self, agent: str, project_dir: Path
+    ) -> None:
+        """A project install lands under the project root, never outside it."""
+        target = _resolve_target(agent, "project", project_dir)
+        assert target.is_relative_to(project_dir.resolve())
+
+    @pytest.mark.parametrize("agent", SUPPORTED_AGENTS)
+    def test_global_target_resolves_inside_home(
+        self, agent: str, home_dir: Path, project_dir: Path
+    ) -> None:
+        """A global install lands under $HOME, or is refused outright."""
+        if AGENTS[agent].global_path is None:
+            with pytest.raises(ValueError, match="does not support global"):
+                _resolve_target(agent, "global", project_dir)
+            return
+        target = _resolve_target(agent, "global", project_dir)
+        assert target.is_relative_to(home_dir.resolve())
+
+    @pytest.mark.parametrize("agent", SUPPORTED_AGENTS)
+    def test_global_path_and_global_method_agree(self, agent: str) -> None:
+        """``global_method`` is set exactly when a global install exists."""
+        cfg = AGENTS[agent]
+        assert (cfg.global_path is None) == (cfg.global_method is None), (
+            f"{agent}: global_path={cfg.global_path!r} global_method={cfg.global_method!r}"
+        )
+
+    @pytest.mark.parametrize("agent", SUPPORTED_AGENTS)
+    def test_methods_are_known_values(self, agent: str) -> None:
+        """Only ``overwrite`` and ``section`` are implemented writers."""
+        cfg = AGENTS[agent]
+        assert cfg.project_method in ("overwrite", "section")
+        assert cfg.global_method in ("overwrite", "section", None)
+
+    @pytest.mark.parametrize("agent", SUPPORTED_AGENTS)
+    def test_effective_method_comes_from_the_data(self, agent: str) -> None:
+        """No agent gets a hardcoded method that contradicts its config."""
+        cfg = AGENTS[agent]
+        assert _effective_method(agent, "project") == cfg.project_method
+        if cfg.global_method is None:
+            with pytest.raises(ValueError, match="does not support global"):
+                _effective_method(agent, "global")
+        else:
+            assert _effective_method(agent, "global") == cfg.global_method
+
+
+# ── Write behaviour that survives existing content ───────────────────────────
+
+
+def _installs(method: str) -> list[tuple[str, str]]:
+    """Return ``(agent, scope)`` pairs whose install uses *method*."""
+    pairs = []
+    for agent in SUPPORTED_AGENTS:
+        cfg = AGENTS[agent]
+        if cfg.project_method == method:
+            pairs.append((agent, "project"))
+        if cfg.global_method == method:
+            pairs.append((agent, "global"))
+    return pairs
+
+
+def _install(agent: str, scope: str, project_dir: Path) -> Path:
+    """Install *agent* in *scope*; ``home_dir`` must be active for global."""
+    return install_skill(agent, scope=scope, project_dir=project_dir)
+
+
+class TestSectionInstalls:
+    """Section installs share a file with content we did not write."""
+
+    @pytest.mark.parametrize(("agent", "scope"), _installs("section"))
+    def test_installing_twice_does_not_duplicate_the_section(
+        self, agent: str, scope: str, project_dir: Path, home_dir: Path
+    ) -> None:
+        """Re-running install replaces the section instead of appending one."""
+        first = _install(agent, scope, project_dir)
+        second = _install(agent, scope, project_dir)
+
+        assert first == second
+        content = first.read_text(encoding="utf-8")
+        assert content.count(_SECTION_BEGIN) == 1
+        assert content.count(_SECTION_END) == 1
+
+    @pytest.mark.parametrize(("agent", "scope"), _installs("section"))
+    def test_unrelated_content_survives_install_and_uninstall(
+        self, agent: str, scope: str, project_dir: Path, home_dir: Path
+    ) -> None:
+        """We append to somebody else's file — theirs must come back intact."""
+        target = _resolve_target(agent, scope, project_dir)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        theirs = "# House rules\n\nAlways run the linter.\n"
+        target.write_text(theirs, encoding="utf-8")
+
+        _install(agent, scope, project_dir)
+        after_install = target.read_text(encoding="utf-8")
+        assert "Always run the linter." in after_install
+        assert _SECTION_BEGIN in after_install
+
+        assert uninstall_skill(agent, scope=scope, project_dir=project_dir) is True
+        after_uninstall = target.read_text(encoding="utf-8")
+        assert "Always run the linter." in after_uninstall
+        assert _SECTION_BEGIN not in after_uninstall
+        assert _SECTION_END not in after_uninstall
+
+    @pytest.mark.parametrize(("agent", "scope"), _installs("section"))
+    def test_uninstall_removes_the_file_it_created_alone(
+        self, agent: str, scope: str, project_dir: Path, home_dir: Path
+    ) -> None:
+        """If we created the shared file ourselves, uninstall leaves nothing."""
+        target = _install(agent, scope, project_dir)
+        assert uninstall_skill(agent, scope=scope, project_dir=project_dir) is True
+        assert not target.exists()
+
+
+class TestOverwriteInstalls:
+    """Overwrite installs own their file — and only their file."""
+
+    @pytest.mark.parametrize(("agent", "scope"), _installs("overwrite"))
+    def test_install_is_idempotent(
+        self, agent: str, scope: str, project_dir: Path, home_dir: Path
+    ) -> None:
+        """Two installs produce one file with identical content."""
+        first = _install(agent, scope, project_dir)
+        content = first.read_text(encoding="utf-8")
+        second = _install(agent, scope, project_dir)
+
+        assert first == second
+        assert second.read_text(encoding="utf-8") == content
+
+    @pytest.mark.parametrize(("agent", "scope"), _installs("overwrite"))
+    def test_uninstall_leaves_neighbouring_files_alone(
+        self, agent: str, scope: str, project_dir: Path, home_dir: Path
+    ) -> None:
+        """Directory cleanup must stop at the first non-empty directory."""
+        target = _install(agent, scope, project_dir)
+        neighbour = target.parent / "someone-elses-rules.md"
+        neighbour.write_text("not ours\n", encoding="utf-8")
+
+        assert uninstall_skill(agent, scope=scope, project_dir=project_dir) is True
+        assert not target.exists()
+        assert neighbour.read_text(encoding="utf-8") == "not ours\n"

@@ -284,20 +284,53 @@ def server(
     help="Domain overlay to include (general, code, or research).",
 )
 def install(agent: str, scope: str, project_dir: str | None, domain: str) -> None:
-    """Install agent skill configuration for AGENT.
+    """Install the graph-mem skill document for AGENT.
 
-    Writes the appropriate MCP configuration file so that the
-    selected coding agent can discover graph-mem.  Use --domain
-    to include a domain-specific overlay (e.g. code for software
+    Writes one markdown document — the graph-mem usage instructions — to the
+    place AGENT reads project or user instructions from, either as a file of
+    its own or as a marked section inside a file AGENT already shares.
+
+    \b
+    It does NOT write any MCP configuration. Registering the server stays
+    your job; add this to AGENT's own MCP config:
+        {"mcpServers": {"graphmem-mcp": {"command": "graph-mem",
+                                         "args": ["server"]}}}
+    The same snippet is under "MCP Configuration" in the installed document.
+
+    Use --domain to include a domain-specific overlay (code for software
     engineering, research for academic papers).
     """
     try:
-        from graph_mem.cli.install import install_skill  # lazy import
+        from graph_mem.cli.install import (
+            AGENTS,  # lazy import
+            install_skill,  # lazy import
+        )
 
         pd = Path(project_dir) if project_dir else None
         result_path: Path = install_skill(agent=agent, scope=scope, project_dir=pd, domain=domain)
         click.secho(f"Installed {agent} skill ({scope}, domain={domain}):", fg="green")
         click.echo(f"  {result_path}")
+
+        # Say whether this location is one we could confirm against vendor
+        # documentation. A path that silently does nothing because the agent
+        # reads somewhere else is worse than one the user knows to check.
+        doc_url = AGENTS[agent].doc_url
+        if doc_url:
+            click.echo(f"  Location documented at: {doc_url}")
+        else:
+            click.secho(
+                "  Note: this location is not confirmed against current vendor "
+                f"documentation. If {agent} does not pick the file up, check "
+                "where it reads instructions from and move the file there.",
+                fg="yellow",
+            )
+
+        click.secho(
+            f"  No MCP config was written — add graph-mem to {agent}'s MCP config yourself:",
+            fg="yellow",
+        )
+        click.echo('    {"mcpServers": {"graphmem-mcp": {"command": "graph-mem", ')
+        click.echo('                                     "args": ["server"]}}}')
     except GraphMemError as exc:
         log.debug("Install command failed: %s", exc, exc_info=True)
         _print_error(str(exc))

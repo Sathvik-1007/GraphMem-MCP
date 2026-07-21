@@ -49,108 +49,169 @@ SUPPORTED_AGENTS: tuple[str, ...] = (
 
 @dataclass(frozen=True, slots=True)
 class AgentConfig:
-    """Install location and strategy for a single agent."""
+    """Install location and strategy for a single agent.
+
+    The write method is stored per scope because it genuinely differs per
+    scope: codex owns a file in a project but shares ``~/.codex/AGENTS.md``
+    globally, and gemini is the mirror image. Storing one method per config
+    forced those two into hardcoded branches that contradicted the stored
+    value.
+
+    ``doc_url`` is the vendor page that documents ``project_path``. It is
+    ``None`` when no authoritative documentation for the path could be found;
+    the CLI says so at install time rather than implying the location is
+    confirmed.
+    """
 
     project_path: str  # relative to project root
-    global_path: str | None  # relative to ~, or None if unsupported
-    method: str  # "overwrite" or "section"
+    global_path: str | None  # relative to ~, or None if the agent has no user scope
+    project_method: str  # "overwrite" or "section"
+    global_method: str | None  # as above; None exactly when global_path is None
+    doc_url: str | None  # vendor documentation for the path, or None if unverified
 
 
 AGENTS: dict[str, AgentConfig] = {
     "claude": AgentConfig(
         project_path=".claude/skills/graph-mem/SKILL.md",
         global_path=".claude/skills/graph-mem/SKILL.md",
-        method="overwrite",
+        project_method="overwrite",
+        global_method="overwrite",
+        doc_url=None,
     ),
     "opencode": AgentConfig(
         project_path=".opencode/skills/graph-mem/SKILL.md",
         global_path=".config/opencode/skills/graph-mem/SKILL.md",
-        method="overwrite",
+        project_method="overwrite",
+        global_method="overwrite",
+        doc_url=None,
     ),
     "codex": AgentConfig(
         project_path=".agents/skills/graph-mem/SKILL.md",
         global_path=".codex/AGENTS.md",
-        method="overwrite",  # project=overwrite, global=section
+        project_method="overwrite",
+        global_method="section",
+        doc_url=None,
     ),
     "gemini": AgentConfig(
         project_path="AGENTS.md",
         global_path=".gemini/skills/graph-mem/SKILL.md",
-        method="section",  # project=section, global=overwrite
+        project_method="section",
+        global_method="overwrite",
+        doc_url=None,
     ),
     "cursor": AgentConfig(
         project_path=".cursor/rules/graph-mem.md",
         global_path=None,
-        method="overwrite",
+        project_method="overwrite",
+        global_method=None,
+        doc_url=None,
     ),
     "windsurf": AgentConfig(
         project_path=".windsurf/rules/graph-mem.md",
         global_path=None,
-        method="overwrite",
+        project_method="overwrite",
+        global_method=None,
+        doc_url=None,
     ),
     "amp": AgentConfig(
         project_path=".agents/skills/graph-mem/SKILL.md",
         global_path=".config/agents/skills/graph-mem/SKILL.md",
-        method="overwrite",
+        project_method="overwrite",
+        global_method="overwrite",
+        doc_url=None,
     ),
     "antigravity": AgentConfig(
         project_path=".agents/skills/graph-mem/SKILL.md",
         global_path=None,
-        method="overwrite",
+        project_method="overwrite",
+        global_method=None,
+        doc_url=None,
     ),
     "copilot": AgentConfig(
-        project_path=".github/prompts/graph-mem/PROMPT.md",
+        # Repository-wide instructions are a single file, always applied.
+        # Written as a section so instructions the user already wrote survive.
+        project_path=".github/copilot-instructions.md",
         global_path=None,
-        method="overwrite",
+        project_method="section",
+        global_method=None,
+        doc_url="https://docs.github.com/en/copilot/how-tos/configure-custom-instructions",
     ),
     "kiro": AgentConfig(
-        project_path=".kiro/steering/graph-mem/SKILL.md",
-        global_path=None,
-        method="overwrite",
+        # Steering is a flat directory of markdown files, not of directories.
+        project_path=".kiro/steering/graph-mem.md",
+        global_path=".kiro/steering/graph-mem.md",
+        project_method="overwrite",
+        global_method="overwrite",
+        doc_url="https://kiro.dev/docs/steering/",
     ),
     "roocode": AgentConfig(
-        project_path=".roo/skills/graph-mem/SKILL.md",
-        global_path=None,
-        method="overwrite",
+        # Roo reads .roo/rules/ recursively; the global scope is ~/.roo/rules/.
+        project_path=".roo/rules/graph-mem.md",
+        global_path=".roo/rules/graph-mem.md",
+        project_method="overwrite",
+        global_method="overwrite",
+        doc_url="https://docs.roocode.com/features/custom-instructions",
     ),
     "qoder": AgentConfig(
         project_path=".qoder/skills/graph-mem/SKILL.md",
         global_path=None,
-        method="overwrite",
+        project_method="overwrite",
+        global_method=None,
+        doc_url=None,
     ),
     "trae": AgentConfig(
         project_path=".trae/skills/graph-mem/SKILL.md",
         global_path=None,
-        method="overwrite",
+        project_method="overwrite",
+        global_method=None,
+        doc_url=None,
     ),
     "continue": AgentConfig(
-        project_path=".continue/skills/graph-mem/SKILL.md",
+        # Continue reads rules from .continue/rules/*.md — there is no skills/.
+        project_path=".continue/rules/graph-mem.md",
         global_path=None,
-        method="overwrite",
+        project_method="overwrite",
+        global_method=None,
+        doc_url="https://docs.continue.dev/customize/deep-dives/rules",
     ),
     "codebuddy": AgentConfig(
         project_path=".codebuddy/skills/graph-mem/SKILL.md",
         global_path=None,
-        method="overwrite",
+        project_method="overwrite",
+        global_method=None,
+        doc_url=None,
     ),
     "droid": AgentConfig(
         project_path=".factory/skills/graph-mem/SKILL.md",
         global_path=None,
-        method="overwrite",
+        project_method="overwrite",
+        global_method=None,
+        doc_url=None,
     ),
     "kilocode": AgentConfig(
-        project_path=".kilocode/skills/graph-mem/SKILL.md",
+        # Kilo inherited .kilocode/rules/ from Roo, but its own docs also
+        # describe a newer single-file kilo.jsonc config. The two accounts
+        # disagree, so this path stays flagged unverified rather than guessed
+        # with false confidence.
+        project_path=".kilocode/rules/graph-mem.md",
         global_path=None,
-        method="overwrite",
+        project_method="overwrite",
+        global_method=None,
+        doc_url=None,
     ),
     "warp": AgentConfig(
         project_path=".warp/skills/graph-mem/SKILL.md",
         global_path=None,
-        method="overwrite",
+        project_method="overwrite",
+        global_method=None,
+        doc_url=None,
     ),
     "augment": AgentConfig(
         project_path=".augment/skills/graph-mem/SKILL.md",
         global_path=None,
-        method="overwrite",
+        project_method="overwrite",
+        global_method=None,
+        doc_url=None,
     ),
 }
 
@@ -446,15 +507,21 @@ def _write_section(path: Path, content: str) -> None:
 def _effective_method(agent: str, scope: str) -> str:
     """Return the write method for *agent* in the given *scope*.
 
-    Most agents use the same method regardless of scope, but two are special:
-    - codex: project → overwrite, global → section
-    - gemini: project → section,   global → overwrite
+    The method comes straight from :class:`AgentConfig`, which stores one per
+    scope. Scope matters because an agent can own a dedicated file in one
+    scope and share a file in the other (codex, gemini).
+
+    Raises:
+        ValueError: If *scope* is ``"global"`` and the agent has no global
+            install location.
     """
-    if agent == "codex":
-        return "overwrite" if scope == "project" else "section"
-    if agent == "gemini":
-        return "section" if scope == "project" else "overwrite"
-    return AGENTS[agent].method
+    cfg = AGENTS[agent]
+    if scope == "project":
+        return cfg.project_method
+    if cfg.global_method is None:
+        msg = f"Agent {agent!r} does not support global installation"
+        raise ValueError(msg)
+    return cfg.global_method
 
 
 def _resolve_target(agent: str, scope: str, project_dir: Path) -> Path:

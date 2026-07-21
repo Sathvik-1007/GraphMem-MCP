@@ -174,11 +174,21 @@ graph TB
 
 When no embedding model is installed, search gracefully degrades to FTS-only mode.
 
+### What the scores mean
+
+`relevance_score` is the raw Reciprocal Rank Fusion sum: `Σ weight_i / (k + rank_i + 1)` with `k = 60`. It is **not** normalised to 0-1. A result appearing first in both the vector and full-text lists scores about `0.0164`; one appearing first in a single list scores about `0.0082`.
+
+That matters for `min_score`. Normalising to 0-1 would force the top hit to score exactly 1.0 no matter how bad it was, which makes `min_score` a threshold against the best result rather than against relevance — it could never filter out a uniformly poor result set. Raw RRF scores are comparable across queries, so a threshold means something.
+
+Observations contribute to their parent entity's score, capped at the value of one perfect observation match. Without the cap, ten mediocre observations outrank one exact hit.
+
+Filters (`entity_types`, `entity_id`) are applied **before** the candidate list is truncated to `limit`. Filtering after truncation is why a scoped search used to return nothing whenever the matching entity was not also globally top-ranked — which is precisely when scoping is worth using.
+
 ---
 
 ## Multi-Hop Traversal
 
-`find_connections` walks the graph recursively using SQL CTEs, discovering indirect relationships up to a configurable depth. This surfaces connections that no flat search can find -- like tracing a function through three layers of abstraction to the database schema it ultimately modifies.
+`find_connections` walks the graph breadth-first, discovering indirect relationships up to a configurable depth. This surfaces connections that no flat search can find -- like tracing a function through three layers of abstraction to the database schema it ultimately modifies.
 
 ```mermaid
 graph LR
@@ -191,6 +201,18 @@ graph LR
 ```
 
 A query like `find_connections("AuthService", max_hops=3)` traverses the full chain `AuthService -> UserStore -> PostgresDB -> users_table`, even though `users_table` never mentions "auth."
+
+### Why the traversal is Python and not a recursive CTE
+
+The obvious SQL formulation is a `WITH RECURSIVE` walk carrying a per-row `visited` array. It looks like breadth-first search and is not: each row's visited set is private to the path that produced it, so nothing prevents a node from being expanded again along every other route into it. The query enumerates every *simple path*, and its cost grows with the number of paths rather than with the size of the graph.
+
+On a 14-node, 91-edge graph at `max_hops=6`, that formulation materialised **1,409,006 intermediate rows in 6.4 seconds** to return 13 entities. A breadth-first walk with one global visited set returns the same 13 entities in **1 millisecond**.
+
+SQLite's recursive CTE cannot express a global visited set — the recursive term cannot query the rows the CTE has produced so far. So the level-stepping happens in Python: one indexed adjacency query per hop, at most ten of them, each expanding the whole current frontier at once. The work is linear in the nodes and edges actually visited.
+
+Every traversal is bounded by a node budget (`GRAPHMEM_TRAVERSAL_NODE_BUDGET`, default 5000). A traversal that hits the budget returns what it found and sets `truncated: true` rather than silently returning a subset.
+
+`get_subgraph` runs a single multi-source expansion from all seeds at once, not one traversal per seed.
 
 ---
 

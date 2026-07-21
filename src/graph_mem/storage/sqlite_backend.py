@@ -187,18 +187,52 @@ class SQLiteBackend:
     async def get_entity_by_name(
         self, name: str, entity_type: str | None = None
     ) -> dict[str, Any] | None:
+        """Look up one entity by exact name, optionally narrowed by type.
+
+        One name can belong to several entities of different types ("Mercury"
+        the planet and "Mercury" the project), and the unnarrowed lookup has to
+        pick one. It picks the most recently updated, deterministically:
+        without an ORDER BY, SQLite's choice depends on the query plan, so the
+        same name could resolve to a different entity from one call to the
+        next — and ``resolve_entity`` feeds add_observations, update_entity,
+        and delete_entities, so an observation could land on the wrong entity.
+        """
         db = self._require_db()
         if entity_type is not None:
             return await db.fetch_one(
-                "SELECT * FROM entities WHERE name = ? AND entity_type = ?",
+                "SELECT * FROM entities WHERE name = ? AND entity_type = ? "
+                "ORDER BY updated_at DESC, id ASC LIMIT 1",
                 (name, entity_type),
             )
-        return await db.fetch_one("SELECT * FROM entities WHERE name = ?", (name,))
+        return await db.fetch_one(
+            "SELECT * FROM entities WHERE name = ? ORDER BY updated_at DESC, id ASC LIMIT 1",
+            (name,),
+        )
 
     async def get_entity_by_name_nocase(self, name: str) -> dict[str, Any] | None:
+        """Case-insensitive name lookup, resolved deterministically.
+
+        Ordering matters more here than in the exact lookup: a NOCASE match can
+        return several rows that differ only in capitalisation.
+        """
         return await self._require_db().fetch_one(
-            "SELECT * FROM entities WHERE name = ? COLLATE NOCASE", (name,)
+            "SELECT * FROM entities WHERE name = ? COLLATE NOCASE "
+            "ORDER BY updated_at DESC, id ASC LIMIT 1",
+            (name,),
         )
+
+    async def count_entities_by_name(self, name: str) -> int:
+        """Count entities sharing *name* across all types.
+
+        Lets callers tell "resolved the only match" from "picked one of
+        several", so an ambiguous reference can be reported rather than
+        silently resolved.
+        """
+        row = await self._require_db().fetch_one(
+            "SELECT COUNT(*) AS cnt FROM entities WHERE name = ? COLLATE NOCASE",
+            (name,),
+        )
+        return int(row["cnt"]) if row else 0
 
     async def list_entities(
         self, entity_type: str | None = None, limit: int = 100, offset: int = 0
@@ -290,14 +324,33 @@ class SQLiteBackend:
         return {str(r["entity_type"]): int(r["cnt"]) for r in rows}
 
     async def most_connected_entities(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Return the highest-degree entities, most connected first.
+
+        Degree counts both endpoints, so an edge contributes to each of the two
+        entities it joins; a self-loop contributes twice to the same entity,
+        which is the conventional reading of degree.
+
+        Performance:
+            Counts endpoints with a UNION ALL over the two indexed columns
+            rather than joining on ``source_id = e.id OR target_id = e.id``.
+            An OR across two columns cannot use either index, so the previous
+            form scanned the whole relationships table once per entity.
+        """
         return await self._require_db().fetch_all(
             """
-            SELECT e.id, e.name, e.entity_type, COUNT(r.id) AS degree
+            WITH endpoint_counts AS (
+                SELECT entity_id, COUNT(*) AS degree FROM (
+                    SELECT source_id AS entity_id FROM relationships
+                    UNION ALL
+                    SELECT target_id AS entity_id FROM relationships
+                )
+                GROUP BY entity_id
+            )
+            SELECT e.id, e.name, e.entity_type,
+                   COALESCE(c.degree, 0) AS degree
             FROM entities e
-            LEFT JOIN relationships r
-              ON r.source_id = e.id OR r.target_id = e.id
-            GROUP BY e.id
-            ORDER BY degree DESC
+            LEFT JOIN endpoint_counts c ON c.entity_id = e.id
+            ORDER BY degree DESC, e.name ASC
             LIMIT ?
             """,
             (limit,),

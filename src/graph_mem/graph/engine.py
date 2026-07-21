@@ -602,16 +602,38 @@ class GraphEngine:
         # Step 2: exact match on name only
         row = await self._storage.get_entity_by_name(name)
         if row is not None:
+            await self._warn_if_ambiguous(name, row)
             return Entity.from_row(row)
 
         # Step 3: case-insensitive match
         row = await self._storage.get_entity_by_name_nocase(name)
         if row is not None:
+            await self._warn_if_ambiguous(name, row)
             return Entity.from_row(row)
 
         # Step 4: not found — gather suggestions and raise
         suggestions = await self._storage.fts_suggest_similar(name)
         raise EntityNotFoundError(name, suggestions=suggestions)
+
+    async def _warn_if_ambiguous(self, name: str, chosen: dict[str, Any]) -> None:
+        """Log when a bare name matched more than one entity.
+
+        One name can belong to several entities of different types, and
+        resolution has to pick one. The pick is deterministic (most recently
+        updated), but it is still a guess, and the caller may be about to
+        attach an observation to the wrong entity. Saying so in the log is the
+        difference between a silent misfile and a traceable one.
+        """
+        total = await self._storage.count_entities_by_name(name)
+        if total > 1:
+            log.warning(
+                "Name %r matches %d entities; resolved to the most recently "
+                "updated one (%s, type=%s). Pass entity_type to disambiguate.",
+                name,
+                total,
+                chosen.get("id"),
+                chosen.get("entity_type"),
+            )
 
     # ── Stats ────────────────────────────────────────────────────────────
 

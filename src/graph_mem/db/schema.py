@@ -63,21 +63,56 @@ async def _ensure_version_table(db: Database) -> None:
 
 
 async def get_current_version(db: Database) -> int:
+    """Return the highest applied migration version, or 0 if none."""
     await _ensure_version_table(db)
     row = await db.fetch_one("SELECT MAX(version) AS v FROM schema_version")
     return int(row["v"]) if row and row["v"] is not None else 0
 
 
-async def run_migrations(db: Database) -> int:
-    """Apply all pending migrations and return the number applied."""
-    await _ensure_version_table(db)
-    current = await get_current_version(db)
-    migrations = _discover_migrations()
-    applied = 0
-    last_applied_version = current
+async def get_applied_versions(db: Database) -> set[int]:
+    """Return every migration version recorded as applied.
 
+    The applied *set*, not just the maximum: deciding what to run from
+    ``MAX(version)`` means a migration numbered below one already applied is
+    skipped forever. That is exactly what happens when a fix is backported —
+    v002 authored after v003 shipped would never run on any database in the
+    field, and nothing would report it.
+    """
+    await _ensure_version_table(db)
+    rows = await db.fetch_all("SELECT version FROM schema_version")
+    return {int(r["version"]) for r in rows}
+
+
+async def run_migrations(db: Database) -> int:
+    """Apply every migration not yet recorded, and return how many ran.
+
+    Each migration runs inside its own transaction together with the row that
+    records it, so a failure leaves the database at the last complete version
+    rather than partway through one.
+
+    Raises:
+        SchemaError: A migration failed, or the database was written by a
+            newer version of graph-mem than this one understands.
+    """
+    await _ensure_version_table(db)
+    already_applied = await get_applied_versions(db)
+    migrations = _discover_migrations()
+    known_versions = {version for version, _ in migrations}
+
+    # A database carrying migrations this build has never heard of was written
+    # by a newer graph-mem. Continuing would let old code write rows against a
+    # schema it does not understand, so refuse rather than corrupt.
+    unknown = already_applied - known_versions
+    if unknown:
+        raise SchemaError(
+            f"Database has migrations this version does not know about: "
+            f"{sorted(unknown)}. It was created by a newer graph-mem — "
+            f"upgrade rather than downgrade."
+        )
+
+    applied = 0
     for version, mod in migrations:
-        if version <= current:
+        if version in already_applied:
             continue
         desc = getattr(mod, "DESCRIPTION", f"Migration v{version:03d}")
         log.info("Applying migration v%03d: %s", version, desc)
@@ -90,13 +125,12 @@ async def run_migrations(db: Database) -> int:
                     (version, time.time(), desc),
                 )
             applied += 1
-            last_applied_version = version
         except Exception as exc:
             raise SchemaError(f"Migration v{version:03d} failed: {exc}") from exc
 
     if applied:
-        log.info("Applied %d migration(s), now at v%03d", applied, last_applied_version)
+        log.info("Applied %d migration(s), now at v%03d", applied, max(known_versions, default=0))
     else:
-        log.debug("Schema up to date at v%03d", current)
+        log.debug("Schema up to date at v%03d", max(already_applied, default=0))
 
     return applied

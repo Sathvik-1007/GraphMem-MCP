@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
+import pytest
 import pytest_asyncio
 
 from graph_mem.db.connection import Database
@@ -148,3 +149,69 @@ async def test_fts_trigger_delete(migrated_db: Database) -> None:
         ("TempEntity",),
     )
     assert len(rows) == 0
+
+
+# ── Version tracking ─────────────────────────────────────────────────────────
+
+
+async def test_applied_versions_returns_the_full_set(db) -> None:
+    """Tracking is by applied set, not by maximum."""
+    from graph_mem.db.schema import get_applied_versions, run_migrations
+
+    await run_migrations(db)
+    applied = await get_applied_versions(db)
+
+    assert applied == {1, 2}
+
+
+async def test_a_gap_below_the_maximum_is_still_applied(db) -> None:
+    """A migration numbered below one already applied must still run.
+
+    Regression: the runner skipped anything with `version <= MAX(version)`, so
+    a fix backported as v002 after v003 had shipped would never run on any
+    database in the field — and nothing would say so.
+    """
+    from graph_mem.db.schema import get_applied_versions, run_migrations
+
+    await run_migrations(db)
+
+    # Simulate the backport case: forget v001 was applied, keep the higher one.
+    await db.execute("DELETE FROM schema_version WHERE version = 1")
+    assert await get_applied_versions(db) == {2}
+
+    applied_count = await run_migrations(db)
+
+    assert applied_count == 1, "the lower-numbered migration was skipped"
+    assert await get_applied_versions(db) == {1, 2}
+
+
+async def test_database_from_a_newer_version_is_refused(db) -> None:
+    """An unknown migration means the file was written by newer code.
+
+    Opening it anyway would let this build write rows against a schema it does
+    not understand.
+    """
+    import time as _time
+
+    from graph_mem.db.schema import run_migrations
+    from graph_mem.utils.errors import SchemaError
+
+    await run_migrations(db)
+    await db.execute(
+        "INSERT INTO schema_version (version, applied_at, description) VALUES (?, ?, ?)",
+        (999, _time.time(), "from the future"),
+    )
+
+    with pytest.raises(SchemaError, match="newer graph-mem"):
+        await run_migrations(db)
+
+
+async def test_running_migrations_twice_applies_nothing_the_second_time(db) -> None:
+    """Migration is idempotent — startup runs it on every open."""
+    from graph_mem.db.schema import run_migrations
+
+    first = await run_migrations(db)
+    second = await run_migrations(db)
+
+    assert first >= 1
+    assert second == 0
