@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Iterator
     from pathlib import Path
 
 from graph_mem.db.connection import Database
@@ -26,6 +26,18 @@ from graph_mem.utils.errors import DatabaseError
 from graph_mem.utils.logging import get_logger
 
 log = get_logger("storage.sqlite")
+
+
+# SQLite's SQLITE_MAX_VARIABLE_NUMBER is 999 on builds before 3.32 and 32766
+# after.  Chunking at 900 keeps every generated IN (...) clause valid on any
+# build we might be running against, including bundled system SQLite.
+_MAX_SQL_VARIABLES = 900
+
+
+def _chunked(items: list[str], size: int) -> Iterator[list[str]]:
+    """Yield successive *size*-length slices of *items*."""
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
 
 
 class SQLiteBackend(StorageBackend):
@@ -696,36 +708,163 @@ class SQLiteBackend(StorageBackend):
     async def fetch_entity_rows(self, entity_ids: list[str]) -> list[dict[str, Any]]:
         if not entity_ids:
             return []
-        placeholders = ",".join("?" for _ in entity_ids)
-        return await self._require_db().fetch_all(
-            f"SELECT * FROM entities WHERE id IN ({placeholders})",
-            tuple(entity_ids),
-        )
+        rows: list[dict[str, Any]] = []
+        for chunk in _chunked(list(dict.fromkeys(entity_ids)), _MAX_SQL_VARIABLES):
+            placeholders = ",".join("?" for _ in chunk)
+            rows.extend(
+                await self._require_db().fetch_all(
+                    f"SELECT * FROM entities WHERE id IN ({placeholders})",
+                    tuple(chunk),
+                )
+            )
+        return rows
 
     async def fetch_relationships_between(self, entity_ids: list[str]) -> list[dict[str, Any]]:
+        """Return edges whose *both* endpoints are in *entity_ids*.
+
+        Chunking is over the source side only; the target side keeps the full
+        id set so the "both endpoints" condition stays exact.  When the id set
+        alone exceeds the variable budget the membership test moves into a
+        temporary table instead, because splitting it would silently drop the
+        cross-chunk edges that make a subgraph connected.
+        """
         if not entity_ids:
             return []
-        placeholders = ",".join("?" for _ in entity_ids)
-        return await self._require_db().fetch_all(
+
+        unique_ids = list(dict.fromkeys(entity_ids))
+        sql_head = (
             "SELECT r.*, "
             "  s.name AS source_name, s.entity_type AS source_type, "
             "  t.name AS target_name, t.entity_type AS target_type "
             "FROM relationships r "
             "JOIN entities s ON s.id = r.source_id "
             "JOIN entities t ON t.id = r.target_id "
-            f"WHERE r.source_id IN ({placeholders}) AND r.target_id IN ({placeholders})",
-            tuple(entity_ids) + tuple(entity_ids),
         )
+
+        # Fast path: the whole set fits in one statement, twice over.
+        if len(unique_ids) * 2 <= _MAX_SQL_VARIABLES:
+            placeholders = ",".join("?" for _ in unique_ids)
+            return await self._require_db().fetch_all(
+                sql_head
+                + f"WHERE r.source_id IN ({placeholders}) AND r.target_id IN ({placeholders})",
+                tuple(unique_ids) + tuple(unique_ids),
+            )
+
+        return await self._fetch_relationships_between_large(sql_head, unique_ids)
+
+    async def _fetch_relationships_between_large(
+        self, sql_head: str, unique_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        """Both-endpoint edge fetch for id sets too large to bind inline.
+
+        Loads the id set into a temporary table and joins against it, which
+        keeps the query exact regardless of set size.  The table is dropped
+        even if the query fails, so a failure cannot poison the next call on
+        this connection.
+        """
+        db = self._require_db()
+        await db.execute("DROP TABLE IF EXISTS temp._subgraph_ids")
+        await db.execute("CREATE TEMP TABLE _subgraph_ids (id TEXT PRIMARY KEY)")
+        try:
+            await db.execute_many(
+                "INSERT OR IGNORE INTO temp._subgraph_ids (id) VALUES (?)",
+                [(eid,) for eid in unique_ids],
+            )
+            return await db.fetch_all(
+                sql_head + "JOIN temp._subgraph_ids si ON si.id = r.source_id "
+                "JOIN temp._subgraph_ids ti ON ti.id = r.target_id"
+            )
+        finally:
+            await db.execute("DROP TABLE IF EXISTS temp._subgraph_ids")
+
+    async def fetch_adjacent_edges(
+        self,
+        entity_ids: list[str],
+        *,
+        direction: str = "both",
+        relationship_types: list[str] | None = None,
+    ) -> list[tuple[str, str, str]]:
+        """Return every edge with an endpoint in *entity_ids*.
+
+        The breadth-first traversal hot path.  Deliberately returns bare
+        ``(source_id, target_id, relationship_type)`` triples rather than full
+        rows: a frontier expansion needs nothing else, and skipping the two
+        joins to ``entities`` plus the row payload is what keeps a wide
+        frontier cheap.  Entity details are fetched once at the end, for the
+        nodes that actually made it into the result.
+
+        Args:
+            entity_ids: The current frontier. Duplicates are harmless.
+            direction: ``"outgoing"`` matches edges whose source is in the
+                frontier, ``"incoming"`` whose target is, ``"both"`` either.
+            relationship_types: Optional whitelist, matched case-insensitively
+                against the stored (already lower-cased) type.
+
+        Returns:
+            Edge triples, possibly containing duplicates when a single edge
+            has both endpoints in the frontier. Order is unspecified.
+
+        Performance:
+            One query per chunk of :data:`_MAX_SQL_VARIABLES` frontier ids.
+            Both ``source_id`` and ``target_id`` are indexed, so each query is
+            an index scan proportional to the edges actually touched.
+        """
+        if not entity_ids:
+            return []
+
+        type_filter = ""
+        type_params: tuple[object, ...] = ()
+        if relationship_types:
+            normalised = [rt.strip().lower() for rt in relationship_types]
+            type_placeholders = ",".join("?" for _ in normalised)
+            type_filter = f" AND relationship_type IN ({type_placeholders})"
+            type_params = tuple(normalised)
+
+        # "both" binds each id twice, so its chunks may only be half as wide.
+        ids_per_bind = 2 if direction == "both" else 1
+        budget = _MAX_SQL_VARIABLES - len(type_params)
+        chunk_size = max(1, budget // ids_per_bind)
+
+        edges: list[tuple[str, str, str]] = []
+        unique_ids = list(dict.fromkeys(entity_ids))
+        for start in range(0, len(unique_ids), chunk_size):
+            chunk = unique_ids[start : start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+
+            if direction == "outgoing":
+                where = f"source_id IN ({placeholders})"
+                params: tuple[object, ...] = tuple(chunk)
+            elif direction == "incoming":
+                where = f"target_id IN ({placeholders})"
+                params = tuple(chunk)
+            else:
+                where = f"(source_id IN ({placeholders}) OR target_id IN ({placeholders}))"
+                params = tuple(chunk) + tuple(chunk)
+
+            rows = await self._require_db().fetch_all(
+                f"SELECT source_id, target_id, relationship_type "
+                f"FROM relationships WHERE {where}{type_filter}",
+                params + type_params,
+            )
+            edges.extend(
+                (str(r["source_id"]), str(r["target_id"]), str(r["relationship_type"]))
+                for r in rows
+            )
+
+        return edges
 
     async def resolve_entity_names(self, entity_ids: set[str]) -> dict[str, str]:
         if not entity_ids:
             return {}
-        placeholders = ",".join("?" for _ in entity_ids)
-        rows = await self._require_db().fetch_all(
-            f"SELECT id, name FROM entities WHERE id IN ({placeholders})",
-            tuple(entity_ids),
-        )
-        return {str(r["id"]): str(r["name"]) for r in rows}
+        names: dict[str, str] = {}
+        for chunk in _chunked(list(entity_ids), _MAX_SQL_VARIABLES):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = await self._require_db().fetch_all(
+                f"SELECT id, name FROM entities WHERE id IN ({placeholders})",
+                tuple(chunk),
+            )
+            names.update({str(r["id"]): str(r["name"]) for r in rows})
+        return names
 
     # ── Schema introspection ────────────────────────────────────────────
 

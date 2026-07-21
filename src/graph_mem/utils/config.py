@@ -72,6 +72,16 @@ class Config:
     search_limit: int = field(default_factory=lambda: _env_int("GRAPHMEM_SEARCH_LIMIT", 10))
     max_hops: int = field(default_factory=lambda: _env_int("GRAPHMEM_MAX_HOPS", 4))
 
+    # ── Traversal bounds ─────────────────────────────────────────────────
+    # Hard ceiling on how many distinct entities a single traversal may visit.
+    # Traversal cost is linear in visited nodes and their edges, so this caps
+    # both the work done and the size of the response handed back to an agent.
+    # 5000 comfortably covers a whole realistic project graph while keeping a
+    # worst-case traversal in the tens of milliseconds.
+    traversal_node_budget: int = field(
+        default_factory=lambda: _env_int("GRAPHMEM_TRAVERSAL_NODE_BUDGET", 5000)
+    )
+
     # ── Search tuning ────────────────────────────────────────────────────
     rrf_alpha: float = field(default_factory=lambda: _env_float("GRAPHMEM_RRF_ALPHA", 0.5))
     obs_boost: float = field(default_factory=lambda: _env_float("GRAPHMEM_OBS_BOOST", 0.5))
@@ -95,6 +105,11 @@ class Config:
             raise ConfigError(f"GRAPHMEM_SEARCH_LIMIT must be >= 1, got {self.search_limit}")
         if self.max_hops < 1:
             raise ConfigError(f"GRAPHMEM_MAX_HOPS must be >= 1, got {self.max_hops}")
+        if self.traversal_node_budget < 1:
+            raise ConfigError(
+                f"GRAPHMEM_TRAVERSAL_NODE_BUDGET must be >= 1, "
+                f"got {self.traversal_node_budget}"
+            )
         if not (0.0 <= self.rrf_alpha <= 1.0):
             raise ConfigError(
                 f"GRAPHMEM_RRF_ALPHA must be between 0.0 and 1.0, got {self.rrf_alpha}"

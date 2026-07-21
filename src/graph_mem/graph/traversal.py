@@ -1,59 +1,219 @@
-"""Graph traversal — multi-hop BFS and path-finding over the knowledge graph.
+"""Graph traversal — breadth-first search and path-finding over the knowledge graph.
 
-Provides efficient traversal using SQLite recursive CTEs with cycle
-detection via json_array. All operations are read-only and async.
+Responsible for topology questions: what is reachable from here, how do these
+two entities connect, what does the neighbourhood around these seeds look like.
+Not responsible for ranking (see :mod:`graph_mem.semantic.search`) or for
+mutating the graph (see :mod:`graph_mem.graph.engine`).
 
-The traversal layer accepts a :class:`StorageBackend` and uses its
-``fetch_all`` escape hatch for complex recursive queries. Graph-database
-backends (Neo4j, Memgraph) will override ``fetch_all`` with their
-native traversal queries (Cypher, GQL).
+Why this is Python and not a recursive CTE
+------------------------------------------
+The obvious SQL formulation — a ``WITH RECURSIVE`` walk carrying a per-row
+``visited`` array — does not perform breadth-first search.  It enumerates every
+*simple path*, because each row's visited set is private to that path and
+therefore cannot stop a node from being re-expanded along a different route.
+On a 14-node, 91-edge graph at ``max_hops=6`` that formulation materialised
+1 409 006 intermediate rows and took 30 seconds to return 13 entities.
+
+A genuine BFS keeps one *global* visited set, so every node is expanded at most
+once.  SQLite's recursive CTE has no way to express that: the recursive term
+cannot query the rows the CTE has produced so far.  Doing the level-stepping
+here instead costs one query per hop — at most ten, each an indexed lookup over
+the current frontier — and makes the work linear in the nodes and edges
+actually visited.
+
+Every traversal is additionally bounded by a node budget, so even a fully
+connected graph returns promptly and says so.
 """
 
 from __future__ import annotations
 
-import json
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from graph_mem.models.entity import Entity
 from graph_mem.models.relationship import Relationship
+from graph_mem.utils.errors import ValidationError
 from graph_mem.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
     from graph_mem.storage.base import StorageBackend
 
 log = get_logger("graph.traversal")
 
-# Safety limit: maximum number of visited nodes in a single traversal
-# to prevent runaway CTEs on dense graphs.
-_MAX_VISITED = 1000
+# Ceiling on traversal depth.  Beyond ten hops a "connection" in a knowledge
+# graph carries no useful meaning — nearly everything is reachable — and the
+# result stops being something an agent can act on.
+MAX_HOPS_LIMIT = 10
 
-# ── Shared CTE fragments ────────────────────────────────────────────────
-# The bidirectional CASE expression that resolves the "next" entity in a
-# traversal step.  Used in find_connections, find_paths, and get_subgraph.
-_NEXT_ENTITY_BOTH = "CASE WHEN r.source_id = t.entity_id THEN r.target_id ELSE r.source_id END"
+# Ceiling on subgraph expansion.  Lower than MAX_HOPS_LIMIT because a subgraph
+# returns full entity and relationship records rather than a summary, so its
+# response grows much faster per hop.
+MAX_RADIUS_LIMIT = 5
 
-# Bidirectional JOIN condition
-_JOIN_BOTH = "(r.source_id = t.entity_id OR r.target_id = t.entity_id)"
+# Default cap on distinct entities visited per traversal.  Overridden from
+# ``Config.traversal_node_budget``; kept here so GraphTraversal is usable
+# standalone.
+DEFAULT_NODE_BUDGET = 5000
 
-# Cycle-detection sub-query — prevents revisiting nodes already in the
-# ``visited`` json_array.  Use with ``.format(next_entity=...)`` to plug
-# in the correct next-entity expression.
-_CYCLE_GUARD = (
-    "AND NOT EXISTS (\n"
-    "                  SELECT 1 FROM json_each(t.visited)\n"
-    "                  WHERE value = {next_entity}\n"
-    "              )"
-)
+# How many distinct shortest paths ``find_paths`` will enumerate.  All returned
+# paths have the same (minimal) length; this bounds the fan-out when many
+# equally-short routes exist.
+MAX_SHORTEST_PATHS = 10
+
+# Accepted values for the ``direction`` argument.
+_VALID_DIRECTIONS = ("outgoing", "incoming", "both")
+
+
+@dataclass(frozen=True, slots=True)
+class _Step:
+    """How the traversal arrived at a node: one edge, and where it came from."""
+
+    parent: str
+    relationship_type: str
+    direction: str
+
+
+@dataclass(slots=True)
+class _BfsResult:
+    """Outcome of one breadth-first expansion.
+
+    Attributes:
+        depth: Hop count from the nearest seed, for every node reached.
+            Seeds are at depth 0.
+        parents: For each non-seed node, every edge that reaches it at its
+            *minimal* depth. More than one entry means several equally-short
+            routes exist. Deeper routes are not recorded — they can only
+            produce longer paths.
+        truncated: Whether the node budget stopped the expansion early, so the
+            result is a subset of what is reachable.
+    """
+
+    depth: dict[str, int] = field(default_factory=dict)
+    parents: dict[str, list[_Step]] = field(default_factory=dict)
+    truncated: bool = False
 
 
 class GraphTraversal:
-    """Multi-hop graph traversal using recursive CTEs.
+    """Breadth-first traversal over the knowledge graph.
 
     All methods are async and read-only.
+
+    Args:
+        storage: Backend supplying batched adjacency lookups.
+        node_budget: Maximum distinct entities any single traversal may visit.
+            Results that hit the budget are marked ``truncated`` rather than
+            silently cut short.
     """
 
-    def __init__(self, storage: StorageBackend) -> None:
+    def __init__(
+        self,
+        storage: StorageBackend,
+        *,
+        node_budget: int = DEFAULT_NODE_BUDGET,
+    ) -> None:
+        if node_budget < 1:
+            raise ValueError(f"node_budget must be >= 1, got {node_budget}")
         self._storage = storage
+        self._node_budget = node_budget
+
+    # ── Core algorithm ───────────────────────────────────────────────────
+
+    async def _bfs(
+        self,
+        seed_ids: Sequence[str],
+        *,
+        max_hops: int,
+        direction: str = "both",
+        relationship_types: list[str] | None = None,
+        stop_at: str | None = None,
+    ) -> _BfsResult:
+        """Expand outward from *seed_ids* one hop at a time.
+
+        Args:
+            seed_ids: Starting entities, all placed at depth 0.
+            max_hops: How many levels to expand. Already clamped by callers.
+            direction: Edge orientation to follow, relative to the node being
+                expanded.
+            relationship_types: Optional edge-type whitelist.
+            stop_at: Stop as soon as this entity is reached. Because expansion
+                is strictly level-by-level, the depth recorded for it when the
+                loop stops is already minimal.
+
+        Returns:
+            A :class:`_BfsResult` whose ``depth`` includes the seeds.
+
+        Performance:
+            ``O(V + E)`` over the visited subgraph, in at most *max_hops*
+            round trips. Each round trip is one indexed adjacency query per
+            900-id chunk of the frontier.
+        """
+        result = _BfsResult()
+        frontier: list[str] = []
+        for seed in seed_ids:
+            if seed not in result.depth:
+                result.depth[seed] = 0
+                frontier.append(seed)
+
+        if not frontier:
+            return result
+
+        for hop in range(1, max_hops + 1):
+            if not frontier:
+                break
+
+            edges = await self._storage.fetch_adjacent_edges(
+                frontier,
+                direction=direction,
+                relationship_types=relationship_types,
+            )
+            if not edges:
+                break
+
+            in_frontier = set(frontier)
+            next_frontier: list[str] = []
+
+            for source_id, target_id, rel_type in edges:
+                # An edge is usable from whichever endpoint is on the frontier.
+                # When both are, it yields a step in each orientation, which is
+                # how sibling nodes at the same depth get their alternate
+                # shortest-path parents recorded.
+                for parent, neighbour, step_direction in _orientations(
+                    source_id, target_id, in_frontier, direction
+                ):
+                    if neighbour == parent:
+                        continue  # self-loop: reaches nothing new
+                    known_depth = result.depth.get(neighbour)
+
+                    if known_depth is None:
+                        if len(result.depth) >= self._node_budget:
+                            result.truncated = True
+                            continue
+                        result.depth[neighbour] = hop
+                        next_frontier.append(neighbour)
+                        known_depth = hop
+
+                    # Record the edge only when it is one of the shortest ways
+                    # in.  A deeper arrival can never start a shorter path, and
+                    # keeping those is exactly what makes path enumeration
+                    # exponential.
+                    if known_depth == hop:
+                        result.parents.setdefault(neighbour, []).append(
+                            _Step(parent, rel_type, step_direction)
+                        )
+
+            frontier = next_frontier
+
+            if stop_at is not None and stop_at in result.depth:
+                break
+
+        if result.truncated:
+            log.warning(
+                "Traversal hit the %d-entity budget and returned a partial result",
+                self._node_budget,
+            )
+        return result
 
     # ── Connection discovery ─────────────────────────────────────────────
 
@@ -74,92 +234,58 @@ class GraphTraversal:
             direction: ``"outgoing"``, ``"incoming"``, or ``"both"``.
 
         Returns:
-            List of dicts, each containing:
+            List of dicts ordered by depth then name, each containing:
             - ``entity``: The discovered entity as a dict.
             - ``depth``: Hop count from the starting entity.
-            - ``path``: List of
-              ``{entity_name, relationship_type, direction}`` steps.
+            - ``path``: One shortest route in, as a list of
+              ``{entity_id, entity_name, relationship_type, direction}`` steps.
+
+        Raises:
+            ValidationError: *direction* is not a recognised value.
         """
-        max_hops = max(1, min(max_hops, 10))
+        _validate_direction(direction)
+        max_hops = _clamp(max_hops, 1, MAX_HOPS_LIMIT)
 
-        # Build the JOIN condition based on direction
-        if direction == "outgoing":
-            join_condition = "r.source_id = t.entity_id"
-            next_entity = "r.target_id"
-            dir_expr = "'outgoing'"
-        elif direction == "incoming":
-            join_condition = "r.target_id = t.entity_id"
-            next_entity = "r.source_id"
-            dir_expr = "'incoming'"
-        else:  # both
-            join_condition = _JOIN_BOTH
-            next_entity = _NEXT_ENTITY_BOTH
-            dir_expr = "CASE WHEN r.source_id = t.entity_id THEN 'outgoing' ELSE 'incoming' END"
-
-        # Optional relationship type filter.
-        # Params are built in SQL positional order: seed, seed, [rel_types…], max_hops.
-        rel_type_filter = ""
-        params: list[object] = [entity_id, entity_id]
-        if relationship_types:
-            placeholders = ", ".join("?" for _ in relationship_types)
-            rel_type_filter = f"AND r.relationship_type IN ({placeholders})"
-            params.extend(rt.strip().lower() for rt in relationship_types)
-        params.append(max_hops)
-
-        cycle_guard = _CYCLE_GUARD.format(next_entity=next_entity)
-
-        sql = f"""
-        WITH RECURSIVE traverse(entity_id, depth, visited, path) AS (
-            SELECT ?, 0, json_array(?), json_array()
-            UNION ALL
-            SELECT
-                {next_entity},
-                t.depth + 1,
-                json_insert(t.visited, '$[#]', {next_entity}),
-                json_insert(t.path, '$[#]', json_object(
-                    'relationship_type', r.relationship_type,
-                    'direction', {dir_expr},
-                    'entity_id', {next_entity}
-                ))
-            FROM traverse t
-            JOIN relationships r ON ({join_condition})
-            {rel_type_filter}
-            WHERE t.depth < ?
-              AND json_array_length(t.visited) < {_MAX_VISITED}
-              {cycle_guard}
+        bfs = await self._bfs(
+            [entity_id],
+            max_hops=max_hops,
+            direction=direction,
+            relationship_types=relationship_types,
         )
-        SELECT DISTINCT t.entity_id, t.depth, t.path, e.*
-        FROM traverse t
-        JOIN entities e ON e.id = t.entity_id
-        WHERE t.depth > 0
-        ORDER BY t.depth, e.name
-        """
 
-        rows = await self._storage.fetch_all(sql, tuple(params))
+        reached = [eid for eid, depth in bfs.depth.items() if depth > 0]
+        if not reached:
+            return []
 
-        # Deduplicate by entity_id — keep the shallowest depth
-        seen: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            eid = str(row["entity_id"])
-            depth = int(row["depth"])
-            if eid not in seen or depth < seen[eid]["depth"]:
-                path_raw = row["path"]
-                path = json.loads(path_raw) if isinstance(path_raw, str) else path_raw
+        # One batched fetch for the rows and one for the names used in paths,
+        # instead of a lookup per discovered entity.
+        entity_rows = await self._storage.fetch_entity_rows(reached)
+        rows_by_id = {str(row["id"]): row for row in entity_rows}
 
-                # Enrich path with entity names
-                enriched_path = await self._enrich_path(path)
+        paths = {eid: _shortest_path_steps(eid, bfs) for eid in reached}
+        path_node_ids = {step.parent for steps in paths.values() for step in steps}
+        path_node_ids.update(reached)
+        name_map = await self._storage.resolve_entity_names(path_node_ids)
 
-                seen[eid] = {
+        results: list[dict[str, Any]] = []
+        for eid in reached:
+            row = rows_by_id.get(eid)
+            if row is None:
+                # Edge referencing a deleted entity — skip rather than emit a
+                # half-populated record the caller cannot act on.
+                log.debug("Skipping %s: reachable by edge but no entity row", eid)
+                continue
+            results.append(
+                {
                     "entity": Entity.from_row(row).to_dict(),
-                    "depth": depth,
-                    "path": enriched_path,
+                    "depth": bfs.depth[eid],
+                    "path": _render_path(eid, paths[eid], name_map),
                 }
+            )
 
-        results = sorted(
-            seen.values(), key=lambda x: (x["depth"], str(x["entity"].get("name", "")))
-        )
+        results.sort(key=lambda item: (item["depth"], str(item["entity"].get("name", ""))))
         log.debug(
-            "find_connections from %s: %d entities found within %d hops",
+            "find_connections from %s: %d entities within %d hops",
             entity_id,
             len(results),
             max_hops,
@@ -175,7 +301,7 @@ class GraphTraversal:
         *,
         max_hops: int = 5,
     ) -> list[list[dict[str, Any]]]:
-        """Find shortest paths between two entities using BFS.
+        """Find the shortest paths between two entities.
 
         Args:
             source_id: Starting entity ID.
@@ -183,86 +309,31 @@ class GraphTraversal:
             max_hops: Maximum path length (1-10, clamped).
 
         Returns:
-            List of paths. Each path is a list of
-            ``{entity_name, entity_id, relationship_type}`` steps.
-            Paths are ordered shortest-first.
+            Up to :data:`MAX_SHORTEST_PATHS` paths, all of the same minimal
+            length. Each path runs source-first and includes both endpoints;
+            each step is ``{entity_id, entity_name, relationship_type}``, where
+            the relationship type is the edge *entering* that step's entity and
+            is empty for the source. Empty when no path exists within
+            *max_hops*, or when source and target are the same entity.
         """
-        max_hops = max(1, min(max_hops, 10))
+        max_hops = _clamp(max_hops, 1, MAX_HOPS_LIMIT)
 
         if source_id == target_id:
             return []
 
-        cycle_guard = _CYCLE_GUARD.format(next_entity=_NEXT_ENTITY_BOTH)
-
-        sql = f"""
-        WITH RECURSIVE traverse(entity_id, depth, visited, path) AS (
-            SELECT ?, 0, json_array(?), json_array(json_object(
-                'entity_id', ?, 'entity_name', '', 'relationship_type', ''))
-            UNION ALL
-            SELECT
-                {_NEXT_ENTITY_BOTH},
-                t.depth + 1,
-                json_insert(t.visited, '$[#]',
-                    {_NEXT_ENTITY_BOTH}
-                ),
-                json_insert(t.path, '$[#]', json_object(
-                    'entity_id', {_NEXT_ENTITY_BOTH},
-                    'entity_name', '',
-                    'relationship_type', r.relationship_type
-                ))
-            FROM traverse t
-            JOIN relationships r ON {_JOIN_BOTH}
-            WHERE t.depth < ?
-              AND json_array_length(t.visited) < {_MAX_VISITED}
-              {cycle_guard}
-        )
-        SELECT t.path, t.depth
-        FROM traverse t
-        WHERE t.entity_id = ?
-        ORDER BY t.depth
-        LIMIT 10
-        """
-
-        rows = await self._storage.fetch_all(
-            sql, (source_id, source_id, source_id, max_hops, target_id)
-        )
-
-        if not rows:
+        bfs = await self._bfs([source_id], max_hops=max_hops, stop_at=target_id)
+        if target_id not in bfs.depth:
             return []
 
-        # Collect all entity IDs across all paths for batch name resolution
-        all_entity_ids: set[str] = set()
-        parsed_paths: list[list[dict[str, Any]]] = []
-        for row in rows:
-            path_raw = row["path"]
-            path = json.loads(path_raw) if isinstance(path_raw, str) else path_raw
-            parsed_paths.append(path)
-            for step in path:
-                all_entity_ids.add(str(step["entity_id"]))
+        step_paths = _enumerate_shortest_paths(target_id, bfs, MAX_SHORTEST_PATHS)
 
-        # Batch-resolve entity names
-        name_map = await self._storage.resolve_entity_names(all_entity_ids)
+        node_ids = {source_id, target_id}
+        for steps in step_paths:
+            node_ids.update(step.parent for step in steps)
+        name_map = await self._storage.resolve_entity_names(node_ids)
 
-        results: list[list[dict[str, Any]]] = []
-        for path in parsed_paths:
-            enriched: list[dict[str, Any]] = []
-            for step in path:
-                eid = str(step["entity_id"])
-                enriched.append(
-                    {
-                        "entity_id": eid,
-                        "entity_name": name_map.get(eid, ""),
-                        "relationship_type": str(step.get("relationship_type", "")),
-                    }
-                )
-            results.append(enriched)
-
-        log.debug(
-            "find_paths %s -> %s: %d paths found",
-            source_id,
-            target_id,
-            len(results),
-        )
+        results = [_render_path(target_id, steps, name_map) for steps in step_paths]
+        log.debug("find_paths %s -> %s: %d paths", source_id, target_id, len(results))
         return results
 
     # ── Subgraph extraction ──────────────────────────────────────────────
@@ -273,62 +344,39 @@ class GraphTraversal:
         *,
         radius: int = 2,
     ) -> dict[str, Any]:
-        """Extract a subgraph around a set of seed entities.
-
-        BFS from each seed up to *radius* hops, then collect all
-        unique entities and the relationships between them.
+        """Extract the subgraph around a set of seed entities.
 
         Args:
             entity_ids: Seed entity IDs.
-            radius: How many hops to expand from each seed (1-5, clamped).
+            radius: How many hops to expand from the seeds (1-5, clamped).
 
         Returns:
-            ``{entities: [...], relationships: [...]}`` with deduplicated
-            items serialized via ``to_dict()``.
+            ``{entities: [...], relationships: [...], truncated: bool}``.
+            ``truncated`` is ``True`` when the node budget cut the expansion
+            short, so the caller can tell a complete neighbourhood from a
+            partial one.
+
+        Performance:
+            A single multi-source breadth-first expansion, not one per seed.
+            Seeds that reach the same region share the work instead of
+            repeating it.
         """
-        radius = max(1, min(radius, 5))
+        radius = _clamp(radius, 1, MAX_RADIUS_LIMIT)
 
         if not entity_ids:
-            return {"entities": [], "relationships": []}
+            return {"entities": [], "relationships": [], "truncated": False}
 
-        # Collect all reachable entity IDs via BFS from each seed
-        all_entity_ids: set[str] = set()
-
-        cycle_guard = _CYCLE_GUARD.format(next_entity=_NEXT_ENTITY_BOTH)
-
-        for seed_id in entity_ids:
-            sql = f"""
-            WITH RECURSIVE traverse(entity_id, depth, visited) AS (
-                SELECT ?, 0, json_array(?)
-                UNION ALL
-                SELECT
-                    {_NEXT_ENTITY_BOTH},
-                    t.depth + 1,
-                    json_insert(t.visited, '$[#]',
-                        {_NEXT_ENTITY_BOTH}
-                    )
-                FROM traverse t
-                JOIN relationships r ON {_JOIN_BOTH}
-                WHERE t.depth < ?
-                  AND json_array_length(t.visited) < {_MAX_VISITED}
-                  {cycle_guard}
-            )
-            SELECT DISTINCT entity_id FROM traverse
-            """
-            rows = await self._storage.fetch_all(sql, (seed_id, seed_id, radius))
-            for row in rows:
-                all_entity_ids.add(str(row["entity_id"]))
+        bfs = await self._bfs(entity_ids, max_hops=radius)
+        all_entity_ids = list(bfs.depth)
 
         if not all_entity_ids:
-            return {"entities": [], "relationships": []}
+            return {"entities": [], "relationships": [], "truncated": bfs.truncated}
 
-        # Fetch all entities in the subgraph
-        entity_rows = await self._storage.fetch_entity_rows(list(all_entity_ids))
-        entities = [Entity.from_row(r).to_dict() for r in entity_rows]
+        entity_rows = await self._storage.fetch_entity_rows(all_entity_ids)
+        entities = [Entity.from_row(row).to_dict() for row in entity_rows]
 
-        # Fetch all relationships between entities in the subgraph
-        rel_rows = await self._storage.fetch_relationships_between(list(all_entity_ids))
-        relationships = [Relationship.from_row(r).to_dict() for r in rel_rows]
+        rel_rows = await self._storage.fetch_relationships_between(all_entity_ids)
+        relationships = [Relationship.from_row(row).to_dict() for row in rel_rows]
 
         log.debug(
             "get_subgraph: %d seeds, radius=%d -> %d entities, %d relationships",
@@ -337,27 +385,136 @@ class GraphTraversal:
             len(entities),
             len(relationships),
         )
-        return {"entities": entities, "relationships": relationships}
+        return {
+            "entities": entities,
+            "relationships": relationships,
+            "truncated": bfs.truncated,
+        }
 
-    # ── Internal helpers ─────────────────────────────────────────────────
 
-    async def _enrich_path(self, path: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Add entity_name to each step in a path."""
-        if not path:
-            return path
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
 
-        entity_ids = {str(step["entity_id"]) for step in path if step.get("entity_id")}
-        name_map = await self._storage.resolve_entity_names(entity_ids)
 
-        enriched: list[dict[str, Any]] = []
-        for step in path:
-            eid = str(step.get("entity_id", ""))
-            enriched.append(
-                {
-                    "entity_id": eid,
-                    "entity_name": name_map.get(eid, ""),
-                    "relationship_type": str(step.get("relationship_type", "")),
-                    "direction": str(step.get("direction", "")),
-                }
-            )
-        return enriched
+def _clamp(value: int, low: int, high: int) -> int:
+    """Constrain *value* to the inclusive range ``[low, high]``."""
+    return max(low, min(value, high))
+
+
+def _validate_direction(direction: str) -> None:
+    """Reject a direction the traversal cannot honour.
+
+    Silently treating an unrecognised value as ``"both"`` returns plausible
+    results for a query the caller did not ask, which is worse than an error.
+    """
+    if direction not in _VALID_DIRECTIONS:
+        raise ValidationError(
+            f"direction must be one of {', '.join(_VALID_DIRECTIONS)}, got {direction!r}"
+        )
+
+
+def _orientations(
+    source_id: str,
+    target_id: str,
+    frontier: set[str],
+    direction: str,
+) -> Iterable[tuple[str, str, str]]:
+    """Yield ``(parent, neighbour, direction)`` for each usable end of an edge.
+
+    An edge reaches the frontier from its source, its target, or both. Which
+    ends count depends on the requested direction: following ``"outgoing"``
+    edges means only the source end may act as a parent.
+    """
+    if direction in ("outgoing", "both") and source_id in frontier:
+        yield source_id, target_id, "outgoing"
+    if direction in ("incoming", "both") and target_id in frontier:
+        yield target_id, source_id, "incoming"
+
+
+def _shortest_path_steps(node_id: str, bfs: _BfsResult) -> list[_Step]:
+    """Walk parent links back to a seed, returning the steps source-first.
+
+    Any single chain through ``parents`` is a shortest path, because only
+    minimal-depth arrivals were recorded.
+    """
+    steps: list[_Step] = []
+    current = node_id
+    # Bounded by the node's depth: each hop strictly decreases it.
+    while True:
+        parent_steps = bfs.parents.get(current)
+        if not parent_steps:
+            break
+        step = parent_steps[0]
+        steps.append(step)
+        current = step.parent
+    steps.reverse()
+    return steps
+
+
+def _enumerate_shortest_paths(
+    target_id: str,
+    bfs: _BfsResult,
+    limit: int,
+) -> list[list[_Step]]:
+    """Enumerate up to *limit* distinct shortest paths ending at *target_id*.
+
+    Walks the parent DAG backwards.  Because it only ever contains
+    minimal-depth edges it is acyclic and every root-to-target chain has the
+    same length, so a depth-first walk with an early cut-off is bounded by
+    *limit* paths rather than by the number of paths in the graph.
+    """
+    paths: list[list[_Step]] = []
+
+    def walk(node: str, suffix: list[_Step]) -> None:
+        if len(paths) >= limit:
+            return
+        parent_steps = bfs.parents.get(node)
+        if not parent_steps:
+            paths.append(list(reversed(suffix)))
+            return
+        for step in parent_steps:
+            if len(paths) >= limit:
+                return
+            walk(step.parent, [*suffix, step])
+
+    walk(target_id, [])
+    return paths
+
+
+def _render_path(
+    node_id: str,
+    steps: list[_Step],
+    name_map: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Turn parent links into the caller-facing step list.
+
+    The result runs source-first and includes both endpoints. Each entry names
+    an entity and the relationship that leads *into* it, so the first entry —
+    the origin — has an empty relationship type.
+    """
+    if not steps:
+        return []
+
+    origin = steps[0].parent
+    rendered: list[dict[str, Any]] = [
+        {
+            "entity_id": origin,
+            "entity_name": name_map.get(origin, ""),
+            "relationship_type": "",
+            "direction": "",
+        }
+    ]
+    for index, step in enumerate(steps):
+        # Each step's parent is the previous step's arrival point, so the
+        # entity this step arrives at is the next parent, or the destination.
+        arrival = steps[index + 1].parent if index + 1 < len(steps) else node_id
+        rendered.append(
+            {
+                "entity_id": arrival,
+                "entity_name": name_map.get(arrival, ""),
+                "relationship_type": step.relationship_type,
+                "direction": step.direction,
+            }
+        )
+    return rendered

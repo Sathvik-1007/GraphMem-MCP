@@ -212,6 +212,11 @@ def test_register_and_use_custom_backend():
         async def fetch_relationships_between(self, entity_ids):
             return []
 
+        async def fetch_adjacent_edges(
+            self, entity_ids, *, direction="both", relationship_types=None
+        ):
+            return []
+
         async def resolve_entity_names(self, entity_ids):
             return {}
 

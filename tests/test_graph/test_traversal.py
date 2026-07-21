@@ -6,11 +6,13 @@ Graph structures are built from scratch per test for full isolation.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+import pytest
 import pytest_asyncio
 
 from graph_mem.graph.engine import GraphEngine
@@ -18,6 +20,7 @@ from graph_mem.graph.traversal import GraphTraversal
 from graph_mem.models.entity import Entity
 from graph_mem.models.relationship import Relationship
 from graph_mem.storage import SQLiteBackend
+from graph_mem.utils.errors import ValidationError
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -218,15 +221,37 @@ class TestFindConnections:
     async def test_find_connections_path_info(
         self, engine: GraphEngine, traversal: GraphTraversal
     ) -> None:
-        """Verify that path information is included in results."""
+        """The path names every entity from the origin to the discovered node.
+
+        A→B→C returns three entries, not two: the origin is included so the
+        path is readable on its own, matching what find_paths returns.
+        """
         ids = await _build_chain(engine, ["Alice", "Bob", "Charlie"])
 
         results = await traversal.find_connections(ids[0], max_hops=2)
 
-        # Find Charlie's result (depth 2) and check the path
         charlie_result = next(r for r in results if r["entity"]["name"] == "Charlie")
-        assert "path" in charlie_result
-        assert len(charlie_result["path"]) == 2  # Two hops: A→B, B→C
+        path = charlie_result["path"]
+
+        assert [step["entity_name"] for step in path] == ["Alice", "Bob", "Charlie"]
+        # The origin is not entered through any relationship.
+        assert path[0]["relationship_type"] == ""
+        assert path[1]["relationship_type"] == "knows"
+        assert path[2]["relationship_type"] == "knows"
+
+    async def test_find_connections_rejects_unknown_direction(
+        self, engine: GraphEngine, traversal: GraphTraversal
+    ) -> None:
+        """An unrecognised direction is an error, not a silent fallback to 'both'.
+
+        Regression: 'out', 'OUTGOING', and 'outward' all used to fall through
+        to bidirectional traversal and return results for a question the
+        caller never asked.
+        """
+        a_id = await _create_entity(engine, "Alice")
+
+        with pytest.raises(ValidationError):
+            await traversal.find_connections(a_id, direction="outward")
 
 
 # ── find_paths ───────────────────────────────────────────────────────────────
@@ -365,9 +390,9 @@ class TestGetSubgraph:
         assert len(subgraph["relationships"]) == 2
 
     async def test_get_subgraph_empty(self, engine: GraphEngine, traversal: GraphTraversal) -> None:
-        """No entity IDs should return empty subgraph."""
+        """No entity IDs should return an empty, explicitly-complete subgraph."""
         subgraph = await traversal.get_subgraph([])
-        assert subgraph == {"entities": [], "relationships": []}
+        assert subgraph == {"entities": [], "relationships": [], "truncated": False}
 
     async def test_get_subgraph_radius_expansion(
         self, engine: GraphEngine, traversal: GraphTraversal
@@ -415,3 +440,101 @@ class TestGetSubgraph:
         assert len(subgraph["entities"]) == 1
         assert subgraph["entities"][0]["name"] == "Alice"
         assert subgraph["relationships"] == []
+
+
+# ── Complexity and bounds ────────────────────────────────────────────────────
+
+
+class TestTraversalBounds:
+    """Traversal must stay linear in the graph, and stop where it says it stops."""
+
+    async def test_dense_graph_traversal_is_not_exponential(
+        self, engine: GraphEngine, traversal: GraphTraversal
+    ) -> None:
+        """A complete graph at maximum depth must complete promptly.
+
+        Regression: the previous recursive-CTE traversal enumerated every
+        simple path instead of doing breadth-first search. On exactly this
+        graph it materialised 1 409 006 intermediate rows and took 6.4 seconds
+        to return 13 entities. A breadth-first walk visits each node once.
+
+        The two-second bound is deliberately loose — it is checking for a
+        return of factorial growth, not micro-benchmarking. The current
+        implementation finishes in about 2 ms.
+        """
+        node_count = 14
+        created = await engine.add_entities(
+            [Entity(name=f"node{i}", entity_type="concept") for i in range(node_count)]
+        )
+        ids = [str(entity["id"]) for entity in created]
+        await engine.add_relationships(
+            [
+                Relationship(source_id=ids[i], target_id=ids[j], relationship_type="linked")
+                for i in range(node_count)
+                for j in range(i + 1, node_count)
+            ]
+        )
+
+        started = time.perf_counter()
+        results = await traversal.find_connections(ids[0], max_hops=6)
+        elapsed = time.perf_counter() - started
+
+        # Every other node is one hop away in a complete graph.
+        assert len(results) == node_count - 1
+        assert all(r["depth"] == 1 for r in results)
+        assert elapsed < 2.0, f"traversal took {elapsed:.2f}s — exponential behaviour is back"
+
+    async def test_node_budget_truncates_and_reports_it(
+        self, engine: GraphEngine, db: SQLiteBackend
+    ) -> None:
+        """Hitting the node budget yields a partial result that says it is partial."""
+        ids = await _build_chain(engine, [f"node{i}" for i in range(10)])
+        bounded = GraphTraversal(db, node_budget=4)
+
+        subgraph = await bounded.get_subgraph([ids[0]], radius=5)
+
+        assert subgraph["truncated"] is True
+        assert len(subgraph["entities"]) <= 4
+
+    async def test_within_budget_is_not_marked_truncated(
+        self, engine: GraphEngine, db: SQLiteBackend
+    ) -> None:
+        """A complete traversal is reported as complete."""
+        ids = await _build_chain(engine, ["Alice", "Bob", "Charlie"])
+        bounded = GraphTraversal(db, node_budget=100)
+
+        subgraph = await bounded.get_subgraph([ids[0]], radius=5)
+
+        assert subgraph["truncated"] is False
+        assert len(subgraph["entities"]) == 3
+
+    def test_node_budget_must_be_positive(self, db: SQLiteBackend) -> None:
+        """A zero budget would make every traversal silently return nothing."""
+        with pytest.raises(ValueError, match="node_budget"):
+            GraphTraversal(db, node_budget=0)
+
+    async def test_self_loop_does_not_produce_a_self_connection(
+        self, engine: GraphEngine, traversal: GraphTraversal
+    ) -> None:
+        """An entity related to itself is not one of its own connections."""
+        a_id = await _create_entity(engine, "Alice")
+        await _create_relationship(engine, a_id, a_id, "relates_to")
+
+        results = await traversal.find_connections(a_id, max_hops=3)
+
+        assert results == []
+
+    async def test_cycle_terminates_with_correct_depths(
+        self, engine: GraphEngine, traversal: GraphTraversal
+    ) -> None:
+        """A cycle is traversed once, and each node keeps its shortest depth."""
+        ids = await _build_chain(engine, ["A", "B", "C", "D"])
+        # Close the loop: D → A.
+        await _create_relationship(engine, ids[3], ids[0], "knows")
+
+        results = await traversal.find_connections(ids[0], max_hops=10)
+
+        depths = {r["entity"]["name"]: r["depth"] for r in results}
+        # B is one hop forward, D one hop back through the closing edge, and C
+        # is two hops either way.
+        assert depths == {"B": 1, "D": 1, "C": 2}

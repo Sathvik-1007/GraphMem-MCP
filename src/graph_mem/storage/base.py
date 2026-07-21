@@ -400,6 +400,32 @@ class StorageBackend(ABC):
         """
 
     @abstractmethod
+    async def fetch_adjacent_edges(
+        self,
+        entity_ids: list[str],
+        *,
+        direction: str = "both",
+        relationship_types: list[str] | None = None,
+    ) -> list[tuple[str, str, str]]:
+        """Return ``(source_id, target_id, relationship_type)`` for edges touching *entity_ids*.
+
+        The single primitive the breadth-first traversal is built on: one call
+        expands one frontier.  Returning bare triples rather than full rows is
+        deliberate — the traversal needs only the topology, and entity details
+        are fetched once at the end for the nodes that survive.
+
+        Args:
+            entity_ids: The frontier. Duplicates are tolerated.
+            direction: ``"outgoing"``, ``"incoming"``, or ``"both"``, relative
+                to the entities in *entity_ids*.
+            relationship_types: Optional whitelist, matched case-insensitively.
+
+        Returns:
+            Edge triples in unspecified order. An edge with both endpoints in
+            *entity_ids* may appear more than once.
+        """
+
+    @abstractmethod
     async def resolve_entity_names(self, entity_ids: set[str]) -> dict[str, str]:
         """Batch-resolve entity IDs to names.
 
