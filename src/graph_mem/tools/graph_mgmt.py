@@ -112,6 +112,32 @@ def _resolve_graph_path(name: str) -> Path:
     return db_path
 
 
+def _repoint_dashboard(
+    storage: Any,
+    graph: GraphEngine,
+    search: HybridSearch,
+    db_path: Path,
+) -> None:
+    """Point a running dashboard at the newly activated engines.
+
+    No-op when no dashboard is running.  Failures are logged rather than
+    raised: the graph switch itself has already succeeded, and a stale
+    dashboard is not worth undoing it for.
+    """
+    app = _state._ui_app
+    if app is None:
+        return
+    try:
+        from graph_mem.ui._keys import db_path_key, graph_key, search_key, storage_key
+
+        app[storage_key] = storage
+        app[search_key] = search
+        app[graph_key] = graph
+        app[db_path_key] = str(db_path)
+    except (ImportError, KeyError, TypeError):
+        log.warning("Could not repoint the running dashboard at the new graph", exc_info=True)
+
+
 async def _switch_engines(db_path: Path, graph_name: str) -> dict[str, Any]:
     """Rebuild every engine against *db_path* and retire the previous storage.
 
@@ -160,6 +186,11 @@ async def _switch_engines(db_path: Path, graph_name: str) -> dict[str, Any]:
     _state.embeddings = embeddings
     _state.search = search
     _state._active_graph = graph_name
+
+    # A dashboard started by open_dashboard captured the previous engines in
+    # its aiohttp app.  Repoint it, or every request it serves after this
+    # would hit a closed backend with no way to recover short of a restart.
+    _repoint_dashboard(storage, graph, search, db_path)
 
     # Safe now: no engine and no in-flight tool call references old_storage.
     await old_storage.close()

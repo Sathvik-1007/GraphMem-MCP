@@ -1,8 +1,11 @@
 """API route handlers for the graph-mem visualisation UI.
 
-All endpoints are read-only (GET) for graph data, with write endpoints
-for entity/relationship/observation management.  Handlers pull ``storage``
+Read endpoints (GET) serve graph data; write endpoints create, update, and
+delete entities, relationships, and observations.  Handlers pull ``storage``
 and ``search`` from ``request.app`` — no direct database connections.
+
+Every route here is reachable only through ``security_middleware``, which
+authenticates the caller before any handler runs.
 """
 
 from __future__ import annotations
@@ -34,9 +37,11 @@ from ._keys import (
     frontend_dir_key,
     graph_key,
     search_key,
+    session_token_key,
     storage_key,
     switch_lock_key,
 )
+from .security import TOKEN_PLACEHOLDER
 
 log = get_logger("ui.routes")
 
@@ -798,12 +803,34 @@ async def handle_switch_graph(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+def _index_response(request: web.Request, frontend_dir: Path) -> web.Response:
+    """Serve ``index.html`` with the live session token substituted in.
+
+    The built bundle ships with a placeholder rather than a token, so the file
+    on disk holds no secret.  Substituting per-response also means a rotated
+    token takes effect without rebuilding the frontend.
+    """
+    html = (frontend_dir / "index.html").read_text(encoding="utf-8")
+    token = request.app.get(session_token_key, "")
+    html = html.replace(TOKEN_PLACEHOLDER, token)
+    return web.Response(
+        text=html,
+        content_type="text/html",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            # The token sits in the document; keep it out of Referer headers.
+            "Referrer-Policy": "no-referrer",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 async def _handle_index(request: web.Request) -> web.StreamResponse:
     """Serve ``index.html`` at the root."""
     frontend_dir: Path | None = request.app.get(frontend_dir_key)
     if frontend_dir is None:
         return _no_frontend_response()
-    return web.FileResponse(frontend_dir / "index.html")
+    return _index_response(request, frontend_dir)
 
 
 async def _handle_spa_fallback(request: web.Request) -> web.StreamResponse:
@@ -811,13 +838,16 @@ async def _handle_spa_fallback(request: web.Request) -> web.StreamResponse:
     frontend_dir: Path | None = request.app.get(frontend_dir_key)
     if frontend_dir is None:
         return _no_frontend_response()
-    # Serve actual files if they exist, otherwise fall back to index.html.
-    # SECURITY: resolve() + startswith() prevents path traversal (../../etc/passwd).
-    requested = (frontend_dir / request.match_info["path"]).resolve()
+    # Serve a real file when the path names one, otherwise hand back the SPA
+    # shell for client-side routing.
+    #
+    # Containment uses is_relative_to, not a string prefix: "frontend-old" has
+    # "frontend" as a string prefix but is a different directory.
     frontend_resolved = frontend_dir.resolve()
-    if requested.is_file() and str(requested).startswith(str(frontend_resolved)):
+    requested = (frontend_dir / request.match_info["path"]).resolve()
+    if requested.is_file() and requested.is_relative_to(frontend_resolved):
         return web.FileResponse(requested)
-    return web.FileResponse(frontend_dir / "index.html")
+    return _index_response(request, frontend_dir)
 
 
 async def _handle_no_frontend(request: web.Request) -> web.Response:

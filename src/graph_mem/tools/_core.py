@@ -61,6 +61,10 @@ class AppState:
     _ui_url: str | None = None
     _ui_runner: Any | None = None
     _ui_port: int | None = None
+    # The running dashboard's aiohttp Application.  Retained so switch_graph
+    # can repoint it at the new engines; without this the dashboard keeps
+    # serving from a closed backend after a switch.
+    _ui_app: Any | None = None
     # Multi-graph state
     _graphmem_dir: Path | None = None  # Path to .graphmem/ directory
     _active_graph: str = "default"  # Currently active graph name

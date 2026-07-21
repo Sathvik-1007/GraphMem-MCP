@@ -92,7 +92,7 @@ Relationships give you structure to traverse. All three matter.
 
 | Tool | Purpose |
 |------|---------|
-| `open_dashboard` | Launch interactive graph explorer in browser (read-only, localhost) |
+| `open_dashboard` | Launch interactive graph explorer in browser (reads *and edits* the graph; localhost-only, token-authenticated) |
 
 ### Multiple Graphs
 

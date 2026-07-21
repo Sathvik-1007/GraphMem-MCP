@@ -12,6 +12,12 @@
       rel="stylesheet"
     />
     <title>GraphMem Explorer</title>
+    <!--
+      The server substitutes the live session token for this placeholder when
+      it serves the document, so the built file on disk contains no secret.
+      In `vite dev` the placeholder is left as-is and the API is unauthenticated.
+    -->
+    <meta name="graphmem-session-token" content="__GRAPHMEM_SESSION_TOKEN__" />
   </head>
   <body>
     <div id="root"></div>

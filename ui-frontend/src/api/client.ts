@@ -7,49 +7,73 @@ import type {
 
 const BASE = "/api";
 
-async function request<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${res.status}: ${text}`);
+/** Placeholder left in index.html when the document is not served by the
+ *  Python server — i.e. `vite dev`, where the API needs no token. */
+const TOKEN_PLACEHOLDER = "__GRAPHMEM_SESSION_TOKEN__";
+
+/**
+ * Session token for API calls, read once from the document.
+ *
+ * The server injects it into index.html at request time and requires it in a
+ * custom header on every /api/ request. A custom header is the point: a
+ * cross-site request cannot set one without a CORS preflight, and the server
+ * rejects preflights from foreign origins.
+ */
+const SESSION_TOKEN: string = (() => {
+  const meta = document.querySelector<HTMLMetaElement>(
+    'meta[name="graphmem-session-token"]',
+  );
+  const value = meta?.content ?? "";
+  return value === TOKEN_PLACEHOLDER ? "" : value;
+})();
+
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...extra };
+  if (SESSION_TOKEN) {
+    headers["X-GraphMem-Token"] = SESSION_TOKEN;
   }
-  return res.json() as Promise<T>;
+  return headers;
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+/**
+ * Single entry point for every API call.
+ *
+ * Consolidating the four near-identical fetch wrappers this replaced means the
+ * auth header cannot be forgotten on a new endpoint, and error handling is
+ * defined once.
+ */
+async function apiFetch<T>(
+  path: string,
+  init: { method?: string; body?: unknown } = {},
+): Promise<T> {
+  const { method = "GET", body } = init;
+  const hasBody = body !== undefined;
+
   const res = await fetch(`${BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    method,
+    headers: authHeaders(hasBody ? { "Content-Type": "application/json" } : undefined),
+    body: hasBody ? JSON.stringify(body) : undefined,
+    // The token is carried by the header; no ambient credentials needed.
+    credentials: "same-origin",
   });
+
   if (!res.ok) {
-    const text = await res.text();
+    const text = await res.text().catch(() => "");
+    if (res.status === 403) {
+      throw new Error(
+        "API 403: session token rejected. Reopen the UI using the URL " +
+          "printed by `graph-mem ui`.",
+      );
+    }
     throw new Error(`API ${res.status}: ${text}`);
   }
   return res.json() as Promise<T>;
 }
 
-async function put<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${res.status}: ${text}`);
-  }
-  return res.json() as Promise<T>;
-}
-
-async function del<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { method: "DELETE" });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${res.status}: ${text}`);
-  }
-  return res.json() as Promise<T>;
-}
+const request = <T>(path: string) => apiFetch<T>(path);
+const post = <T>(path: string, body: unknown) => apiFetch<T>(path, { method: "POST", body });
+const put = <T>(path: string, body: unknown) => apiFetch<T>(path, { method: "PUT", body });
+const del = <T>(path: string) => apiFetch<T>(path, { method: "DELETE" });
 
 export function fetchGraph(
   limit = 200,

@@ -12,8 +12,14 @@
       rel="stylesheet"
     />
     <title>GraphMem Explorer</title>
-    <script type="module" crossorigin src="/assets/index-CX3AKCWA.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-Dh3npPEr.css">
+    <!--
+      The server substitutes the live session token for this placeholder when
+      it serves the document, so the built file on disk contains no secret.
+      In `vite dev` the placeholder is left as-is and the API is unauthenticated.
+    -->
+    <meta name="graphmem-session-token" content="__GRAPHMEM_SESSION_TOKEN__" />
+    <script type="module" crossorigin src="/assets/index-v44lQUJK.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DG1-klmb.css">
   </head>
   <body>
     <div id="root"></div>

@@ -1,7 +1,10 @@
 """aiohttp web server for graph-mem visualization UI.
 
-Serves a read-only REST API backed by the existing storage and search
-engines, plus a built-in React SPA for interactive graph exploration.
+Serves a token-authenticated REST API backed by the existing storage and
+search engines, plus a built-in React SPA for interactive graph exploration.
+
+The API exposes write endpoints as well as reads, so it is guarded by the
+checks in ``graph_mem.ui.security`` rather than by the bind address alone.
 """
 
 from __future__ import annotations
@@ -24,14 +27,22 @@ from graph_mem.storage import StorageBackend, create_backend
 from graph_mem.utils import get_logger, load_config, setup_logging
 
 from ._keys import (
+    allowed_hosts_key,
     db_path_key,
     frontend_dir_key,
     graph_key,
     search_key,
+    session_token_key,
     storage_key,
     switch_lock_key,
 )
 from .routes import setup_routes
+from .security import (
+    TOKEN_QUERY_PARAM,
+    allowed_hosts_for,
+    generate_session_token,
+    security_middleware,
+)
 
 log = get_logger("ui")
 
@@ -72,15 +83,41 @@ async def create_app(
     search: HybridSearch,
     graph: GraphEngine | None = None,
     db_path: str | None = None,
+    *,
+    session_token: str | None = None,
+    bind_host: str | None = None,
 ) -> web.Application:
-    """Build the aiohttp Application with all routes and middleware."""
-    app = web.Application(middlewares=[_error_middleware])
+    """Build the aiohttp Application with all routes and middleware.
+
+    Args:
+        storage: Backend the handlers read and write through.
+        search: Hybrid search engine backing ``/api/search``.
+        graph: Graph engine; required by the write endpoints.
+        db_path: Path of the active database, reported by ``/api/graphs``.
+        session_token: Secret every API caller must present. Omitting it
+            disables authentication, which is only appropriate for in-process
+            handler tests — ``start_server`` always supplies one.
+        bind_host: Interface the server will listen on. Used to build the
+            ``Host``/``Origin`` allow-list. Required whenever *session_token*
+            is given.
+
+    Raises:
+        ValueError: *session_token* was supplied without *bind_host*.
+    """
+    if session_token is not None and bind_host is None:
+        raise ValueError("bind_host is required whenever session_token is supplied")
+
+    app = web.Application(middlewares=[_error_middleware, security_middleware])
     app[storage_key] = storage
     app[search_key] = search
     if graph is not None:
         app[graph_key] = graph
     if db_path is not None:
         app[db_path_key] = db_path
+
+    if session_token is not None and bind_host is not None:
+        app[session_token_key] = session_token
+        app[allowed_hosts_key] = allowed_hosts_for(bind_host)
 
     app[switch_lock_key] = asyncio.Lock()
 
@@ -150,7 +187,15 @@ async def start_server(
     search = HybridSearch(storage, embeddings)
 
     graph = GraphEngine(storage)
-    app = await create_app(storage, search, graph, db_path=resolved_db)
+    session_token = generate_session_token()
+    app = await create_app(
+        storage,
+        search,
+        graph,
+        db_path=resolved_db,
+        session_token=session_token,
+        bind_host=host,
+    )
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -168,13 +213,22 @@ async def start_server(
 
     await site.start()
 
-    url = f"http://{host}:{port}"
+    # The token travels to the browser exactly once, in the URL that opens the
+    # UI.  The document route swaps it for a SameSite=Strict session cookie, so
+    # it never needs to appear in a URL again.
+    url = f"http://{host}:{port}/?{TOKEN_QUERY_PARAM}={session_token}"
 
     if host not in ("127.0.0.1", "localhost"):
-        log.warning("WARNING: UI is accessible from the network. No authentication is configured.")
+        log.warning(
+            "UI is bound to %s and reachable from the network. Requests still "
+            "require the session token, but anyone who observes the URL gains "
+            "full read/write access to this knowledge graph.",
+            host,
+        )
 
     log.info("Graph UI available at %s", url)
     print(f"Graph UI available at {url}")
+    print("This URL contains a session token — treat it as a password.")
     print("Press Ctrl+C to stop")
 
     if not no_open:

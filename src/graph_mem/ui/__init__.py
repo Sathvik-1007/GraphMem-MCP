@@ -1,7 +1,9 @@
 """Web UI for interactive graph exploration.
 
-Provides a read-only REST API backed by the existing storage and search
-engines, plus a built-in React SPA for visualising the knowledge graph.
+Provides a token-authenticated REST API backed by the existing storage and
+search engines, plus a built-in React SPA for viewing and editing the
+knowledge graph.  The API reads *and writes*; see ``security`` for the
+authentication and cross-origin defences that guard it.
 
 Optional dependency — install with ``pip install graph-mem[ui]``.
 """
