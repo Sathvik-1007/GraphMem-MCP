@@ -14,6 +14,7 @@ persistence to it, making it compatible with any backend.
 
 from __future__ import annotations
 
+import json
 import time
 from typing import TYPE_CHECKING, Any, TypedDict
 
@@ -24,6 +25,27 @@ if TYPE_CHECKING:
     from graph_mem.storage.base import StorageBackend
 
 log = get_logger("graph.merge")
+
+
+def _as_properties(raw: object) -> dict[str, Any]:
+    """Coerce a stored properties column into a dict.
+
+    Backends may hand back either a decoded dict or the raw JSON text. Anything
+    that is neither — NULL, malformed JSON, a JSON scalar — becomes an empty
+    dict, because a merge must not fail on one bad row.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            decoded = json.loads(raw)
+        except (ValueError, TypeError):
+            log.warning("Ignoring unparseable relationship properties during merge")
+            return {}
+        if isinstance(decoded, dict):
+            return decoded
+        log.warning("Ignoring non-object relationship properties during merge")
+    return {}
 
 
 class MergeResult(TypedDict):
@@ -57,43 +79,75 @@ class EntityMerger:
         endpoint is rewritten; when ``"target_id"``, the target endpoint is
         rewritten.
 
+        Three outcomes:
+
+        - the edge connected the two entities being merged, so after the
+          redirect it would join the surviving entity to itself: dropped
+        - an equivalent edge already exists on the target: the two are
+          combined and this one is dropped
+        - otherwise: the endpoint is repointed
+
         Returns:
-            ``(redirected_count, removed_duplicate_count)`` — exactly one
-            of the two values will be ``1``, the other ``0``.
+            ``(redirected_count, removed_count)`` — exactly one is ``1``.
         """
-        # Determine the "other" endpoint that stays fixed and the lookup
-        # order for the duplicate check.
+        # Work out the endpoint that stays fixed, and the pair to check for an
+        # existing equivalent edge.
         if redirect_column == "source_id":
             other = str(rel["target_id"])
-            if other == source_id:
-                other = target_id  # self-ref becomes target self-ref
             check_source, check_target = target_id, other
         else:
             other = str(rel["source_id"])
             if other == source_id:
-                # Already handled by the source_id pass.
+                # This edge's other end is the source too, so it is a self-loop
+                # on the entity being merged away; the source_id pass has
+                # already dealt with it.
                 return 0, 0
             check_source, check_target = other, target_id
+
+        # An edge between the two entities being merged describes a
+        # relationship an entity would have with itself once they are one
+        # entity, which carries no information. Drop it rather than rewrite it
+        # into a self-loop — the previous code produced exactly that, and
+        # merging two duplicates that reference each other is the *common*
+        # case, not an edge case.
+        if other in (target_id, source_id):
+            await self._storage.delete_relationship_by_id(str(rel["id"]))
+            log.debug(
+                "Dropped relationship %s: it linked the merged pair and would "
+                "have become a self-loop on %s",
+                rel["id"],
+                target_id,
+            )
+            return 0, 1
 
         existing = await self._storage.get_relationship(
             check_source, check_target, str(rel["relationship_type"])
         )
 
         if existing:
-            # Keep the higher weight
+            # Combine the two edges: keep the higher weight, and union the
+            # properties rather than discarding the losing edge's. Dropping
+            # them silently lost data that upsert_relationship preserves.
+            updates: dict[str, Any] = {"updated_at": now}
             if float(rel["weight"]) > float(existing["weight"]):
-                await self._storage.update_relationship(
-                    str(existing["id"]),
-                    {"weight": float(rel["weight"]), "updated_at": now},
-                )
+                updates["weight"] = float(rel["weight"])
+
+            merged_properties = {
+                **_as_properties(existing.get("properties")),
+                **_as_properties(rel.get("properties")),
+            }
+            if merged_properties != _as_properties(existing.get("properties")):
+                updates["properties"] = merged_properties
+
+            await self._storage.update_relationship(str(existing["id"]), updates)
             await self._storage.delete_relationship_by_id(str(rel["id"]))
             return 0, 1
 
-        # No duplicate — just repoint the endpoint.
+        # No equivalent edge — just repoint the endpoint.
         if redirect_column == "source_id":
             await self._storage.update_relationship(
                 str(rel["id"]),
-                {"source_id": target_id, "target_id": other, "updated_at": now},
+                {"source_id": target_id, "updated_at": now},
             )
         else:
             await self._storage.update_relationship(

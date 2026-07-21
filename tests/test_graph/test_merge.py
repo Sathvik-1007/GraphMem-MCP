@@ -151,3 +151,113 @@ async def test_merge_description_append(db_and_engine):
     entity = await graph.get_entity_by_id(target_id)
     assert "First" in entity.description
     assert "Second" in entity.description
+
+
+# ── Merging entities that reference each other ───────────────────────────────
+
+
+async def _relate(graph: GraphEngine, source_id: str, target_id: str, rel_type: str = "knows",
+                  weight: float = 1.0, properties: dict | None = None) -> str:
+    results = await graph.add_relationships(
+        [
+            Relationship(
+                source_id=source_id,
+                target_id=target_id,
+                relationship_type=rel_type,
+                weight=weight,
+                properties=properties or {},
+            )
+        ]
+    )
+    return str(results[0]["id"])
+
+
+async def test_merge_forward_edge_between_pair_leaves_no_self_loop(db_and_engine):
+    """Merging A into B when A->B exists must not produce B->B.
+
+    Regression: the source endpoint was repointed to the target while the
+    target endpoint was already the target, rewriting the edge into a self
+    loop. Duplicates usually *are* linked to each other, so this was the
+    common merge case rather than an exotic one.
+    """
+    db, graph, merger = db_and_engine
+    target_id = await _create_entity(graph, "Bob")
+    source_id = await _create_entity(graph, "Bobby")
+    await _relate(graph, source_id, target_id, "alias_of")
+
+    await merger.merge(target_id, source_id)
+
+    rows = await db.fetch_all("SELECT source_id, target_id FROM relationships")
+    assert not [r for r in rows if r["source_id"] == r["target_id"]], (
+        f"merge created a self-loop: {rows}"
+    )
+    assert rows == []
+
+
+async def test_merge_reverse_edge_between_pair_leaves_no_self_loop(db_and_engine):
+    """Same, with the edge pointing the other way (B->A)."""
+    db, graph, merger = db_and_engine
+    target_id = await _create_entity(graph, "Bob")
+    source_id = await _create_entity(graph, "Bobby")
+    await _relate(graph, target_id, source_id, "alias_of")
+
+    await merger.merge(target_id, source_id)
+
+    rows = await db.fetch_all("SELECT source_id, target_id FROM relationships")
+    assert not [r for r in rows if r["source_id"] == r["target_id"]]
+    assert rows == []
+
+
+async def test_merge_preexisting_self_loop_on_source_is_removed(db_and_engine):
+    """A source entity related to itself does not survive the merge as B->B."""
+    db, graph, merger = db_and_engine
+    target_id = await _create_entity(graph, "Bob")
+    source_id = await _create_entity(graph, "Bobby")
+    await _relate(graph, source_id, source_id, "relates_to")
+
+    await merger.merge(target_id, source_id)
+
+    rows = await db.fetch_all("SELECT source_id, target_id FROM relationships")
+    assert rows == []
+
+
+async def test_merge_keeps_unrelated_edges_and_repoints_them(db_and_engine):
+    """Edges to third parties survive, repointed at the surviving entity."""
+    db, graph, merger = db_and_engine
+    target_id = await _create_entity(graph, "Bob")
+    source_id = await _create_entity(graph, "Bobby")
+    other_id = await _create_entity(graph, "Carol")
+    await _relate(graph, source_id, other_id, "knows")
+
+    result = await merger.merge(target_id, source_id)
+
+    assert result["redirected_relationships"] == 1
+    rows = await db.fetch_all("SELECT source_id, target_id FROM relationships")
+    assert len(rows) == 1
+    assert str(rows[0]["source_id"]) == target_id
+    assert str(rows[0]["target_id"]) == other_id
+
+
+async def test_merge_duplicate_edge_unions_properties_and_keeps_max_weight(db_and_engine):
+    """Combining duplicate edges keeps both edges' properties, not just one's.
+
+    Regression: the losing edge's properties were dropped entirely, which
+    contradicted upsert_relationship, where the same collision merges them.
+    """
+    db, graph, merger = db_and_engine
+    target_id = await _create_entity(graph, "Bob")
+    source_id = await _create_entity(graph, "Bobby")
+    other_id = await _create_entity(graph, "Carol")
+
+    await _relate(graph, target_id, other_id, "knows", weight=0.4, properties={"since": "2020"})
+    await _relate(graph, source_id, other_id, "knows", weight=0.9, properties={"via": "work"})
+
+    result = await merger.merge(target_id, source_id)
+
+    assert result["removed_duplicate_relationships"] == 1
+    rows = await db.fetch_all("SELECT weight, properties FROM relationships")
+    assert len(rows) == 1
+    assert float(rows[0]["weight"]) == 0.9
+    import json as _json
+    props = _json.loads(str(rows[0]["properties"]))
+    assert props == {"since": "2020", "via": "work"}

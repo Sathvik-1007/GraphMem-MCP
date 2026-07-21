@@ -8,7 +8,6 @@ abstract interface in its own module without touching any SQL.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import re
 import sqlite3
@@ -38,6 +37,23 @@ def _chunked(items: list[str], size: int) -> Iterator[list[str]]:
     """Yield successive *size*-length slices of *items*."""
     for start in range(0, len(items), size):
         yield items[start : start + size]
+
+
+def _encode_update_values(updates: dict[str, Any]) -> list[Any]:
+    """Serialise update values into forms SQLite can bind.
+
+    ``properties`` is a JSON TEXT column, so a caller that naturally holds a
+    dict must not have to remember to encode it — sqlite3 rejects dicts with
+    "type 'dict' is not supported", and doing it here means every caller of
+    every update path gets it right.
+    """
+    encoded: list[Any] = []
+    for column, value in updates.items():
+        if column == "properties" and isinstance(value, (dict, list)):
+            encoded.append(json.dumps(value, ensure_ascii=False, default=str))
+        else:
+            encoded.append(value)
+    return encoded
 
 
 class SQLiteBackend(StorageBackend):
@@ -109,8 +125,13 @@ class SQLiteBackend(StorageBackend):
         updated_at: float,
     ) -> Literal["created", "merged"]:
         db = self._require_db()
+        # COLLATE NOCASE matches idx_entities_name_type, which is declared
+        # NOCASE on the name column.  A case-sensitive probe here missed
+        # "Alice" when inserting "alice", fell through to INSERT, and hit the
+        # unique index — turning an ordinary duplicate into a constraint error
+        # that rolled back every entity in the same batch.
         existing = await db.fetch_one(
-            "SELECT * FROM entities WHERE name = ? AND entity_type = ?",
+            "SELECT * FROM entities WHERE name = ? COLLATE NOCASE AND entity_type = ?",
             (name, entity_type),
         )
         if existing is not None:
@@ -204,27 +225,48 @@ class SQLiteBackend(StorageBackend):
         if bad_cols:
             raise DatabaseError(f"Invalid column(s) for entity update: {bad_cols!r}")
         set_clauses = [f"{col} = ?" for col in updates]
-        params = [*list(updates.values()), entity_id]
+        params = [*_encode_update_values(updates), entity_id]
         sql = f"UPDATE entities SET {', '.join(set_clauses)} WHERE id = ?"
         await self._require_db().execute(sql, tuple(params))
 
+    async def _vec_table_exists(self, table: str) -> bool:
+        """Whether a vector table has been created in this database.
+
+        Vector tables are created lazily, once the embedding dimension is
+        known, so "table does not exist" is an ordinary state rather than a
+        failure.  Asking the schema is how that state is distinguished from a
+        genuine error — the previous code ran the DELETE and suppressed
+        ``DatabaseError``, which swallowed disk-full and corruption exactly as
+        readily as a missing table, and reported neither.
+        """
+        if table not in self._VECTOR_TABLES:
+            raise DatabaseError(f"Unknown vector table: {table!r}")
+        row = await self._require_db().fetch_one(
+            "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        )
+        return row is not None
+
     async def delete_entity(self, entity_id: str) -> None:
+        """Delete an entity and everything that belongs to it.
+
+        Observations and relationships cascade via foreign keys, but embeddings
+        live in virtual tables that foreign keys cannot reach, so those are
+        removed explicitly first.
+        """
         db = self._require_db()
-        # Clean up embeddings first (vec tables may not exist — only ignore OperationalError)
+
         if self._vec_available:
-            with contextlib.suppress(sqlite3.OperationalError, DatabaseError):
-                obs_rows = await db.fetch_all(
-                    "SELECT id FROM observations WHERE entity_id = ?", (entity_id,)
+            if await self._vec_table_exists("observation_embeddings"):
+                # One statement rather than one per observation.
+                await db.execute(
+                    "DELETE FROM observation_embeddings WHERE id IN "
+                    "(SELECT id FROM observations WHERE entity_id = ?)",
+                    (entity_id,),
                 )
-                for obs_row in obs_rows:
-                    with contextlib.suppress(sqlite3.OperationalError, DatabaseError):
-                        await db.execute(
-                            "DELETE FROM observation_embeddings WHERE id = ?",
-                            (str(obs_row["id"]),),
-                        )
-            with contextlib.suppress(sqlite3.OperationalError, DatabaseError):
+            if await self._vec_table_exists("entity_embeddings"):
                 await db.execute("DELETE FROM entity_embeddings WHERE id = ?", (entity_id,))
-        # Now delete observations, relationships, and entity
+
         await db.execute("DELETE FROM observations WHERE entity_id = ?", (entity_id,))
         await db.execute(
             "DELETE FROM relationships WHERE source_id = ? OR target_id = ?",
@@ -443,7 +485,7 @@ class SQLiteBackend(StorageBackend):
         if bad_cols:
             raise DatabaseError(f"Invalid column(s) for relationship update: {bad_cols!r}")
         set_clauses = [f"{col} = ?" for col in updates]
-        params = [*list(updates.values()), rel_id]
+        params = [*_encode_update_values(updates), rel_id]
         sql = f"UPDATE relationships SET {', '.join(set_clauses)} WHERE id = ?"
         await self._require_db().execute(sql, tuple(params))
 

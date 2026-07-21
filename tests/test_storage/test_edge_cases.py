@@ -406,3 +406,74 @@ async def test_double_initialize(tmp_db_path: Path) -> None:
     await backend.initialize()  # Should not raise
     assert await backend.count_entities() == 0
     await backend.close()
+
+
+# ── Name collation ───────────────────────────────────────────────────────────
+
+
+async def test_case_variant_name_merges_instead_of_raising(tmp_db_path: Path) -> None:
+    """Adding "alice" after "Alice" merges into the existing entity.
+
+    Regression: the existence probe used a case-sensitive comparison while the
+    unique index is declared COLLATE NOCASE. The probe missed, the INSERT hit
+    the index, and the resulting constraint error rolled back every entity in
+    the batch.
+    """
+    backend = SQLiteBackend(tmp_db_path)
+    await backend.initialize()
+    try:
+        now = time.time()
+        first = await backend.upsert_entity(
+            entity_id="e1",
+            name="Alice",
+            entity_type="person",
+            description="original",
+            properties={},
+            created_at=now,
+            updated_at=now,
+        )
+        second = await backend.upsert_entity(
+            entity_id="e2",
+            name="alice",
+            entity_type="person",
+            description="lowercase variant",
+            properties={},
+            created_at=now,
+            updated_at=now,
+        )
+
+        assert first == "created"
+        assert second == "merged"
+        assert await backend.count_entities() == 1
+
+        # The original row survives, with both descriptions folded in.
+        stored = await backend.get_entity_by_id("e1")
+        assert stored is not None
+        assert stored["name"] == "Alice"
+        assert "original" in str(stored["description"])
+        assert "lowercase variant" in str(stored["description"])
+    finally:
+        await backend.close()
+
+
+async def test_case_variant_names_differing_by_type_are_separate(tmp_db_path: Path) -> None:
+    """The NOCASE match applies to the name only — type still distinguishes."""
+    backend = SQLiteBackend(tmp_db_path)
+    await backend.initialize()
+    try:
+        now = time.time()
+        for entity_id, entity_type in (("e1", "person"), ("e2", "project")):
+            result = await backend.upsert_entity(
+                entity_id=entity_id,
+                name="Mercury",
+                entity_type=entity_type,
+                description="",
+                properties={},
+                created_at=now,
+                updated_at=now,
+            )
+            assert result == "created"
+
+        assert await backend.count_entities() == 2
+    finally:
+        await backend.close()
