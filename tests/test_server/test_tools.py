@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 import pytest_asyncio
 
-import graph_mem.server as server_mod
+import graph_mem.tools._core as core
 from graph_mem.graph.engine import GraphEngine
 from graph_mem.graph.merge import EntityMerger
 from graph_mem.graph.traversal import GraphTraversal
@@ -66,23 +66,23 @@ async def setup_server(tmp_path: Path):
     merger = EntityMerger(storage)
     search = HybridSearch(storage, embeddings)
 
-    server_mod._state.storage = storage
-    server_mod._state.graph = graph
-    server_mod._state.traversal = traversal
-    server_mod._state.merger = merger
-    server_mod._state.embeddings = embeddings
-    server_mod._state.search = search
-    server_mod._state.config = Config(db_path=db_path)
+    core._state.storage = storage
+    core._state.graph = graph
+    core._state.traversal = traversal
+    core._state.merger = merger
+    core._state.embeddings = embeddings
+    core._state.search = search
+    core._state.config = Config(db_path=db_path)
 
     yield
 
     await storage.close()
-    server_mod._state.storage = None
-    server_mod._state.graph = None
-    server_mod._state.traversal = None
-    server_mod._state.merger = None
-    server_mod._state.embeddings = None
-    server_mod._state.search = None
+    core._state.storage = None
+    core._state.graph = None
+    core._state.traversal = None
+    core._state.merger = None
+    core._state.embeddings = None
+    core._state.search = None
 
 
 # ---------------------------------------------------------------------------

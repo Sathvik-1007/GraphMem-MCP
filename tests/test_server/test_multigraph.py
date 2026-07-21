@@ -14,10 +14,8 @@ from unittest.mock import patch
 import pytest
 from mcp.server.fastmcp import FastMCP
 
-import graph_mem.server as server_mod
+import graph_mem.tools._core as core
 from graph_mem.server import (
-    _error_response,
-    _require_state,
     create_graph,
     create_server,
     delete_graph,
@@ -25,6 +23,7 @@ from graph_mem.server import (
     open_dashboard,
     switch_graph,
 )
+from graph_mem.tools._core import _error_response, _require_state
 from graph_mem.utils import GraphMemError
 from graph_mem.utils.config import Config
 from graph_mem.utils.errors import EntityNotFoundError
@@ -70,7 +69,6 @@ def _init_db(path: Path) -> None:
     conn.close()
 
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -87,13 +85,13 @@ def _assert_no_error(result: dict[str, Any]) -> None:
 
 def test_require_state_raises_when_uninitialised():
     """_require_state raises GraphMemError when storage is None."""
-    old = server_mod._state.storage
-    server_mod._state.storage = None
+    old = core._state.storage
+    core._state.storage = None
     try:
         with pytest.raises(GraphMemError, match="Server not initialised"):
             _require_state()
     finally:
-        server_mod._state.storage = old
+        core._state.storage = old
 
 
 def test_require_state_returns_initialized(setup_server):
@@ -147,13 +145,13 @@ def test_create_server_returns_fastmcp():
 def test_create_server_with_config():
     """create_server stores config in _state when provided."""
     cfg = Config(db_path=Path("/tmp/fake.db"))
-    old = server_mod._state.config
+    old = core._state.config
     try:
         server = create_server(cfg)
         assert isinstance(server, FastMCP)
-        assert server_mod._state.config is cfg
+        assert core._state.config is cfg
     finally:
-        server_mod._state.config = old
+        core._state.config = old
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -195,13 +193,13 @@ async def test_list_graphs_multiple(setup_server):
 
 async def test_list_graphs_uninitialised():
     """list_graphs returns error when _graphmem_dir is None."""
-    old = server_mod._state._graphmem_dir
-    server_mod._state._graphmem_dir = None
+    old = core._state._graphmem_dir
+    core._state._graphmem_dir = None
     try:
         result = await list_graphs()
         assert result.get("error") is True
     finally:
-        server_mod._state._graphmem_dir = old
+        core._state._graphmem_dir = old
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -261,7 +259,7 @@ async def test_switch_graph_basic(setup_server):
     _assert_no_error(result)
     assert result["status"] == "switched"
     assert result["name"] == "other"
-    assert server_mod._state._active_graph == "other"
+    assert core._state._active_graph == "other"
 
 
 async def test_switch_graph_already_active(setup_server):
@@ -282,12 +280,12 @@ async def test_switch_graph_and_back(setup_server):
     """switch_graph can round-trip between graphs."""
     await create_graph(name="tmp")
     await switch_graph(name="tmp")
-    assert server_mod._state._active_graph == "tmp"
+    assert core._state._active_graph == "tmp"
 
     result = await switch_graph(name="default")
     _assert_no_error(result)
     assert result["status"] == "switched"
-    assert server_mod._state._active_graph == "default"
+    assert core._state._active_graph == "default"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -345,13 +343,13 @@ async def test_delete_graph_with_wal_shm(setup_server):
 
 async def test_open_dashboard_already_running(setup_server):
     """open_dashboard returns existing URL if already running."""
-    server_mod._state._ui_url = "http://127.0.0.1:9999"
+    core._state._ui_url = "http://127.0.0.1:9999"
     try:
         result = await open_dashboard()
         assert result["status"] == "already_running"
         assert result["url"] == "http://127.0.0.1:9999"
     finally:
-        server_mod._state._ui_url = None
+        core._state._ui_url = None
 
 
 async def test_open_dashboard_missing_dependency(setup_server):

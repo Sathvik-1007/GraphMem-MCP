@@ -87,13 +87,11 @@ def _resolve_graph_path(name: str) -> Path:
         raise ValidationError("Graph name must not be empty.")
     if len(name) > _MAX_GRAPH_NAME_LENGTH:
         raise ValidationError(
-            f"Graph name must be at most {_MAX_GRAPH_NAME_LENGTH} characters, "
-            f"got {len(name)}."
+            f"Graph name must be at most {_MAX_GRAPH_NAME_LENGTH} characters, got {len(name)}."
         )
     if not _GRAPH_NAME_PATTERN.match(name):
         raise ValidationError(
-            f"Graph name must contain only letters, digits, hyphens, and "
-            f"underscores, got: {name!r}"
+            f"Graph name must contain only letters, digits, hyphens, and underscores, got: {name!r}"
         )
     if name == _DEFAULT_GRAPH_STEM:
         raise ValidationError(

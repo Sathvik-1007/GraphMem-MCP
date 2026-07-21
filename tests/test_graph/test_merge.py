@@ -156,8 +156,14 @@ async def test_merge_description_append(db_and_engine):
 # ── Merging entities that reference each other ───────────────────────────────
 
 
-async def _relate(graph: GraphEngine, source_id: str, target_id: str, rel_type: str = "knows",
-                  weight: float = 1.0, properties: dict | None = None) -> str:
+async def _relate(
+    graph: GraphEngine,
+    source_id: str,
+    target_id: str,
+    rel_type: str = "knows",
+    weight: float = 1.0,
+    properties: dict | None = None,
+) -> str:
     results = await graph.add_relationships(
         [
             Relationship(
@@ -259,5 +265,6 @@ async def test_merge_duplicate_edge_unions_properties_and_keeps_max_weight(db_an
     assert len(rows) == 1
     assert float(rows[0]["weight"]) == 0.9
     import json as _json
+
     props = _json.loads(str(rows[0]["properties"]))
     assert props == {"since": "2020", "via": "work"}

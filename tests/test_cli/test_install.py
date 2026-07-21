@@ -7,9 +7,13 @@ from pathlib import Path
 import pytest
 
 from graph_mem.cli.install import (
+    _FALLBACK_SKILL,
     _SECTION_BEGIN,
     _SECTION_END,
     SUPPORTED_AGENTS,
+    _assemble_skill_content,
+    _resolve_skill_dir,
+    _skill_dir_candidates,
     install_skill,
     uninstall_skill,
 )
@@ -273,3 +277,71 @@ def test_install_skill_no_domain_leakage(project_dir: Path) -> None:
     # General domain should not have code-specific relationship types
     assert "IMPORTS" not in core
     assert "CALLS" not in core
+
+
+# ── Skill packaging ──────────────────────────────────────────────────────────
+
+
+class TestSkillResolution:
+    """Where the installer looks for the modular skill files.
+
+    Regression: resolution used a single path that only existed in a source
+    checkout, so every `pip install` emitted the abbreviated fallback while
+    printing a success message. The tests could not catch it because they ran
+    in exactly the layout that worked.
+    """
+
+    def test_candidates_include_the_installed_bundle_location(self) -> None:
+        """The path the wheel actually ships to must be searched."""
+        candidates = _skill_dir_candidates()
+        assert any(c.parent.name == "_bundled_skills" for c in candidates), (
+            f"no _bundled_skills candidate in {candidates}"
+        )
+
+    def test_candidates_include_the_source_checkout_location(self) -> None:
+        """Developers working from a checkout must still get the real files."""
+        candidates = _skill_dir_candidates()
+        assert any(c.parent.name == "skills" for c in candidates), (
+            f"no source-checkout candidate in {candidates}"
+        )
+
+    def test_installed_bundle_is_preferred_over_a_sibling_checkout(self, tmp_path) -> None:
+        """When both layouts exist, the copy shipped with the code wins."""
+        bundled = tmp_path / "_bundled_skills" / "graph-mem"
+        checkout = tmp_path / "skills" / "graph-mem"
+        for d in (bundled, checkout):
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text("x", encoding="utf-8")
+
+        assert _resolve_skill_dir([bundled, checkout]) == bundled
+
+    def test_resolution_returns_none_when_nothing_is_present(self, tmp_path) -> None:
+        """A missing bundle is reported, not papered over."""
+        assert _resolve_skill_dir([tmp_path / "absent"]) is None
+
+    def test_assembled_skill_is_the_full_document_not_the_fallback(self) -> None:
+        """The assembled skill must be the real thing.
+
+        Measured: the real document is ~25 000 characters and the fallback is
+        ~3 700. The threshold sits well above the fallback so this fails loudly
+        if resolution ever breaks again.
+        """
+        content = _assemble_skill_content("general")
+        assert content != _FALLBACK_SKILL
+        assert len(content) > 15_000, f"got {len(content)} chars — resolution fell back"
+
+    @pytest.mark.parametrize("domain", ["general", "code", "research"])
+    def test_each_domain_overlay_is_actually_applied(self, domain: str) -> None:
+        """--domain must change the output, not silently do nothing."""
+        content = _assemble_skill_content(domain)
+        assert len(content) > 15_000
+
+        others = [d for d in ("general", "code", "research") if d != domain]
+        for other in others:
+            assert content != _assemble_skill_content(other), (
+                f"domain {domain!r} produced identical output to {other!r}"
+            )
+
+    def test_unknown_domain_falls_back_to_general(self) -> None:
+        """An unrecognised domain is not an error, but it is not silent either."""
+        assert _assemble_skill_content("nonsense") == _assemble_skill_content("general")

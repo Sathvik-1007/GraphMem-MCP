@@ -94,9 +94,7 @@ async def test_cross_origin_json_post_is_rejected(secured):
 
 async def test_cross_origin_read_is_rejected(secured):
     """Reads are protected as well — the graph is not public data."""
-    resp = await secured.get(
-        "/api/graph", headers={"Origin": "https://evil.example", **_auth()}
-    )
+    resp = await secured.get("/api/graph", headers={"Origin": "https://evil.example", **_auth()})
     assert resp.status == 403
 
 
@@ -161,9 +159,7 @@ async def test_session_cookie_is_not_accepted_for_api_calls(secured):
 
 async def test_foreign_host_header_is_rejected(secured):
     """A rebound DNS name reaches loopback but still carries its own Host."""
-    resp = await secured.get(
-        "/api/stats", headers={"Host": "evil.example", **_auth()}
-    )
+    resp = await secured.get("/api/stats", headers={"Host": "evil.example", **_auth()})
     assert resp.status == 403
 
 

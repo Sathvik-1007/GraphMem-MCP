@@ -200,6 +200,7 @@ async def start_server(
     runner = web.AppRunner(app)
     await runner.setup()
 
+    site: web.BaseSite
     if port == 0:
         # Use SockSite to avoid TOCTOU race — bind once, pass socket directly
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

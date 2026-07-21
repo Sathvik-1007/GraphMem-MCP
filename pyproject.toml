@@ -62,7 +62,10 @@ Issues = "https://github.com/Sathvik-1007/GraphMem-MCP/issues"
 packages = ["src/graph_mem"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"src/graph_mem/ui/frontend" = "graph_mem/ui/frontend"
+# skills/ lives outside src/, so it has to be pulled in explicitly. The UI
+# bundle does not: it is built into src/graph_mem/ui/frontend and the package
+# walk above already includes it. Force-including it as well made hatchling
+# add every file twice and abort the wheel build.
 "skills/graph-mem" = "graph_mem/_bundled_skills/graph-mem"
 
 [tool.ruff]
@@ -81,6 +84,14 @@ python_version = "3.10"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+# Neither package ships a py.typed marker. Both are imported in exactly one
+# place, behind a try/except, and their results are narrowed immediately, so
+# the untyped boundary is contained. follow_untyped_imports (not
+# ignore_missing_imports) is the setting for "installed but unstubbed".
+[[tool.mypy.overrides]]
+module = ["sqlite_vec.*", "onnxruntime.*"]
+follow_untyped_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

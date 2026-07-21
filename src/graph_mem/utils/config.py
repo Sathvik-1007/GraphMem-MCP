@@ -107,8 +107,7 @@ class Config:
             raise ConfigError(f"GRAPHMEM_MAX_HOPS must be >= 1, got {self.max_hops}")
         if self.traversal_node_budget < 1:
             raise ConfigError(
-                f"GRAPHMEM_TRAVERSAL_NODE_BUDGET must be >= 1, "
-                f"got {self.traversal_node_budget}"
+                f"GRAPHMEM_TRAVERSAL_NODE_BUDGET must be >= 1, got {self.traversal_node_budget}"
             )
         if not (0.0 <= self.rrf_alpha <= 1.0):
             raise ConfigError(

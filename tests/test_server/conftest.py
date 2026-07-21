@@ -16,7 +16,7 @@ import pytest_asyncio
 if TYPE_CHECKING:
     from pathlib import Path
 
-import graph_mem.server as server_mod
+import graph_mem.tools._core as core
 from graph_mem.graph.engine import GraphEngine
 from graph_mem.graph.merge import EntityMerger
 from graph_mem.graph.traversal import GraphTraversal
@@ -47,21 +47,21 @@ async def setup_server(tmp_path: Path):
     merger = EntityMerger(storage)
     search = HybridSearch(storage, embeddings)
 
-    server_mod._state.storage = storage
-    server_mod._state.graph = graph
-    server_mod._state.traversal = traversal
-    server_mod._state.merger = merger
-    server_mod._state.embeddings = embeddings
-    server_mod._state.search = search
-    server_mod._state.config = Config(db_path=db_path)
-    server_mod._state._graphmem_dir = graphmem_dir
-    server_mod._state._active_graph = "default"
+    core._state.storage = storage
+    core._state.graph = graph
+    core._state.traversal = traversal
+    core._state.merger = merger
+    core._state.embeddings = embeddings
+    core._state.search = search
+    core._state.config = Config(db_path=db_path)
+    core._state._graphmem_dir = graphmem_dir
+    core._state._active_graph = "default"
 
     yield graphmem_dir
 
     # switch_graph may have replaced the backend; close whichever is current
     # and, if it differs, the original too.  Closing twice is a no-op.
-    current_storage = server_mod._state.storage
+    current_storage = core._state.storage
     if current_storage is not None:
         with contextlib.suppress(Exception):
             await current_storage.close()
@@ -69,12 +69,12 @@ async def setup_server(tmp_path: Path):
         with contextlib.suppress(Exception):
             await storage.close()
 
-    server_mod._state.storage = None
-    server_mod._state.graph = None
-    server_mod._state.traversal = None
-    server_mod._state.merger = None
-    server_mod._state.embeddings = None
-    server_mod._state.search = None
-    server_mod._state.config = None
-    server_mod._state._graphmem_dir = None
-    server_mod._state._active_graph = "default"
+    core._state.storage = None
+    core._state.graph = None
+    core._state.traversal = None
+    core._state.merger = None
+    core._state.embeddings = None
+    core._state.search = None
+    core._state.config = None
+    core._state._graphmem_dir = None
+    core._state._active_graph = "default"

@@ -278,24 +278,74 @@ _SKILL_PARTS: tuple[str, ...] = (
 _VALID_DOMAINS: tuple[str, ...] = ("general", "code", "research")
 
 
+def _skill_dir_candidates() -> list[Path]:
+    """Return the directories that may hold the modular skill files, in order.
+
+    Two layouts have to work, and the previous single-path lookup only worked
+    in one of them:
+
+    - Installed: ``pyproject.toml`` force-includes ``skills/graph-mem`` into
+      the wheel as ``graph_mem/_bundled_skills/graph-mem``. Nothing read that
+      path, so every ``pip install`` silently emitted the short fallback while
+      reporting success.
+    - Source checkout: ``<repo>/skills/graph-mem``, three levels above this
+      file. That is the layout the original ``parents[3]`` assumed, and the
+      only one it resolved in — including when the tests ran, which is why
+      the tests never caught it.
+
+    Installed comes first: when both exist, the copy shipped with the running
+    package is the one that matches its code.
+    """
+    package_root = Path(__file__).resolve().parent.parent
+    return [
+        package_root / "_bundled_skills" / "graph-mem",
+        package_root.parent.parent / "skills" / "graph-mem",
+    ]
+
+
+def _resolve_skill_dir(candidates: list[Path] | None = None) -> Path | None:
+    """Return the first candidate directory that actually holds the skill.
+
+    Args:
+        candidates: Directories to try, defaulting to
+            :func:`_skill_dir_candidates`. Injectable so a test can exercise
+            the installed layout without installing anything.
+
+    Returns:
+        The first directory containing ``SKILL.md``, or ``None`` if none does.
+    """
+    for candidate in candidates if candidates is not None else _skill_dir_candidates():
+        if (candidate / "SKILL.md").is_file():
+            return candidate
+    return None
+
+
 def _assemble_skill_content(domain: str = "general") -> str:
-    """Assemble modular skill content from the skills/graph-mem/ directory.
+    """Assemble modular skill content from the bundled skill directory.
 
     Reads each component file and the requested domain overlay, joining them
     with ``---`` separators.
 
     Args:
         domain: One of ``"general"``, ``"code"``, or ``"research"``.
+            ``None`` and unknown values fall back to ``"general"``.
 
-    Resolution order for each file:
-    1. Filesystem relative to this source file (works in editable installs)
-    2. Hard-coded fallback (always works)
+    Returns:
+        The assembled skill document, or :data:`_FALLBACK_SKILL` when the
+        bundled files cannot be found. The fallback is a fraction of the real
+        content, so it is a degraded result, not an equivalent one.
     """
     if domain not in _VALID_DOMAINS:
         log.warning("Unknown domain %r — falling back to 'general'", domain)
         domain = "general"
 
-    skill_dir = Path(__file__).resolve().parents[3] / "skills" / "graph-mem"
+    skill_dir = _resolve_skill_dir()
+    if skill_dir is None:
+        log.warning(
+            "Bundled skill files not found — installing the abbreviated fallback. "
+            "This is a packaging problem; please report it."
+        )
+        return _FALLBACK_SKILL
 
     parts: list[str] = []
     for filename in _SKILL_PARTS:

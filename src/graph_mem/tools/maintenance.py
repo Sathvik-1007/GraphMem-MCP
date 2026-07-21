@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import contextlib
 import json as _json
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypedDict
+
+if TYPE_CHECKING:
+    from graph_mem.graph.engine import ObservationResult
 
 from graph_mem.models import Observation
 from graph_mem.utils import GraphMemError
@@ -15,6 +18,18 @@ from ._core import (
     _require_state,
     tool,
 )
+
+
+class _Hotspot(TypedDict):
+    """One entity carrying an unusually large number of observations.
+
+    A plain dict of mixed str/int values degrades to ``dict[str, object]``,
+    which makes the numeric comparison below untypeable.
+    """
+
+    name: str
+    entity_type: str
+    observation_count: int
 
 
 @tool()
@@ -52,7 +67,7 @@ async def graph_health() -> dict[str, Any]:
             LIMIT 5
             """,
         )
-        hotspots = [
+        hotspots: list[_Hotspot] = [
             {
                 "name": str(r["name"]),
                 "entity_type": str(r["entity_type"]),
@@ -165,7 +180,7 @@ async def compact_observations(
 
         # Wrap delete+add in a transaction so partial failure doesn't lose data
         deleted_count = 0
-        added_results: list[dict[str, Any]] = []
+        added_results: list[ObservationResult] = []
         async with state.storage.transaction():
             for obs_id in delete_ids:
                 was_deleted = await state.storage.delete_observation(obs_id)

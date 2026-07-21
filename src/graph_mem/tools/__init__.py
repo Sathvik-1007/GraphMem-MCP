@@ -1,11 +1,14 @@
 """Graph Memory MCP tools package.
 
-Importing this package registers all 27 tools on the shared ``mcp``
-FastMCP instance defined in :mod:`._core`.  Each sub-module groups
-related tools by domain.
+Importing this package registers all 28 MCP tools on the shared ``mcp``
+FastMCP instance defined in :mod:`._core`.  Each sub-module groups related
+tools by domain.
 
-Re-exports the ``mcp`` instance and key helpers so that ``server.py``
-and tests can import them from a single location.
+``__all__`` is the package's public surface: the tool functions, the shared
+``mcp`` instance, and the two state types.  Internals such as ``_state`` and
+``_error_response`` live in :mod:`._core` and are imported from there by the
+code and tests that genuinely need them, rather than being re-exported to
+look public.
 """
 
 # Import tool modules — side effect: registers @mcp.tool() decorators
@@ -18,16 +21,7 @@ from . import (  # noqa: F401  — imported for side effects
     relationships,
     search,
 )
-from ._core import (
-    AppState,
-    InitializedState,
-    _embed_entities,  # noqa: F401 — re-exported for server.py backwards compat
-    _embed_observations,  # noqa: F401
-    _error_response,  # noqa: F401
-    _require_state,  # noqa: F401
-    _state,  # noqa: F401
-    mcp,
-)
+from ._core import AppState, InitializedState, mcp
 from .dashboard import open_dashboard
 
 # Re-export all tool functions for backwards compatibility

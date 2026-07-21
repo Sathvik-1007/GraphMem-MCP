@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-import graph_mem.server as server_mod
+import graph_mem.tools._core as core
 from graph_mem.tools._core import _op_guard
 from graph_mem.tools.graph_mgmt import (
     _MAX_GRAPH_NAME_LENGTH,
@@ -112,9 +112,7 @@ def test_resolve_graph_path_over_max_length_raises(setup_server):
 
 
 @pytest.mark.parametrize("name", ESCAPING_NAMES)
-async def test_delete_graph_escaping_name_leaves_target_file_intact(
-    setup_server, tmp_path, name
-):
+async def test_delete_graph_escaping_name_leaves_target_file_intact(setup_server, tmp_path, name):
     """A traversal name returns an error and unlinks nothing."""
     graphmem_dir = setup_server
     # A database sitting where a naive join would land, one level above
@@ -212,7 +210,7 @@ async def test_switch_graph_escaping_name_leaves_target_file_intact(setup_server
     assert result["error_type"] == "ValidationError"
     # Unchanged bytes prove no schema/migration was written into it.
     assert victim.read_bytes() == original
-    assert server_mod._state._active_graph == "default"
+    assert core._state._active_graph == "default"
 
 
 async def test_switch_graph_reserved_stem_is_refused(setup_server):
@@ -220,7 +218,7 @@ async def test_switch_graph_reserved_stem_is_refused(setup_server):
     result = await switch_graph("graph")
 
     assert result["error"] is True
-    assert server_mod._state._active_graph == "default"
+    assert core._state._active_graph == "default"
 
 
 async def test_switch_graph_missing_graph_is_refused(setup_server):
@@ -232,7 +230,7 @@ async def test_switch_graph_missing_graph_is_refused(setup_server):
     assert result["error"] is True
     assert result["error_type"] == "NotFound"
     assert not (graphmem_dir / "nonexistent.db").exists()
-    assert server_mod._state._active_graph == "default"
+    assert core._state._active_graph == "default"
 
 
 async def test_switch_graph_valid_graph_becomes_active(setup_server):
@@ -244,7 +242,7 @@ async def test_switch_graph_valid_graph_becomes_active(setup_server):
 
     assert "error" not in result
     assert result["status"] == "switched"
-    assert server_mod._state._active_graph == "research"
+    assert core._state._active_graph == "research"
 
 
 async def test_switch_graph_failure_leaves_previous_graph_usable(setup_server, monkeypatch):
@@ -259,7 +257,7 @@ async def test_switch_graph_failure_leaves_previous_graph_usable(setup_server, m
     created = await create_graph("brokengraph")
     assert "error" not in created
 
-    healthy_storage = server_mod._state.storage
+    healthy_storage = core._state.storage
 
     class _FailingBackend:
         def __init__(self, *args, **kwargs) -> None:
@@ -277,8 +275,8 @@ async def test_switch_graph_failure_leaves_previous_graph_usable(setup_server, m
 
     assert result["error"] is True
     # The engines must still reference the original, still-open backend.
-    assert server_mod._state.storage is healthy_storage
-    assert server_mod._state._active_graph == "default"
+    assert core._state.storage is healthy_storage
+    assert core._state._active_graph == "default"
     # Prove it is genuinely usable, not merely non-None.
     assert await healthy_storage.count_entities() == 0
 
@@ -299,7 +297,7 @@ async def test_switch_graph_waits_for_in_flight_operations(setup_server):
 
     async def _in_flight_operation() -> None:
         async with _op_guard():
-            storage_seen_by_op.append(server_mod._state.storage)
+            storage_seen_by_op.append(core._state.storage)
             op_started.set()
             await release_op.wait()
             # The backend this call captured must still be open when it
@@ -319,7 +317,7 @@ async def test_switch_graph_waits_for_in_flight_operations(setup_server):
     result = await switch_task
 
     assert "error" not in result
-    assert server_mod._state._active_graph == "concurrent"
+    assert core._state._active_graph == "concurrent"
 
 
 # ---------------------------------------------------------------------------
@@ -395,4 +393,4 @@ def _restore_active_graph():
     """Keep a failed assertion from leaking active-graph state into the next test."""
     yield
     with contextlib.suppress(Exception):
-        server_mod._state._active_graph = "default"
+        core._state._active_graph = "default"

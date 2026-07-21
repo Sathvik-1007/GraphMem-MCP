@@ -7,8 +7,6 @@ and other paths not exercised by the happy-path tool tests.
 from __future__ import annotations
 
 from graph_mem.server import (
-    _embed_entities,
-    _embed_observations,
     add_entities,
     add_observations,
     add_relationships,
@@ -27,6 +25,10 @@ from graph_mem.server import (
     update_entity,
     update_observation,
     update_relationship,
+)
+from graph_mem.tools._core import (
+    _embed_entities,
+    _embed_observations,
 )
 
 

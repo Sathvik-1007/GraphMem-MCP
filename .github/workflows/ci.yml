@@ -15,19 +15,56 @@ permissions:
 
 jobs:
   lint:
-    name: Lint
+    name: Lint and type-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      # The [full] extra is needed for type-checking: mypy follows the
+      # aiohttp and sentence-transformers imports in the UI and semantic
+      # layers, and cannot check them if they are absent.
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[full,dev]"
       - name: Ruff check
-        run: ruff check src/
+        run: ruff check src/ tests/ benchmarks/
       - name: Ruff format check
-        run: ruff format --check src/
+        run: ruff format --check src/ tests/ benchmarks/
+      # mypy is configured strict in pyproject.toml and was previously never
+      # run anywhere, so the configuration described a standard the code was
+      # not held to.
+      - name: Mypy (strict)
+        run: mypy src/graph_mem
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui-frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+        working-directory: ui-frontend
+      - name: Type-check and build
+        run: npm run build
+        working-directory: ui-frontend
+      # The built bundle is committed and shipped inside the wheel. Without
+      # this check it could drift from the source it claims to be built from,
+      # and nothing would notice.
+      - name: Verify the committed bundle matches the source
+        run: |
+          if ! git diff --quiet -- src/graph_mem/ui/frontend; then
+            echo "::error::The committed frontend bundle differs from a fresh build."
+            echo "Run 'npm run build' in ui-frontend/ and commit the result."
+            git diff --stat -- src/graph_mem/ui/frontend
+            exit 1
+          fi
+          echo "Committed bundle matches the source."
 
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -48,7 +85,7 @@ jobs:
         run: pytest tests/ -x -q --tb=short
       - name: Run tests with coverage
         if: matrix.python-version == '3.13'
-        run: pytest tests/ --cov=graph_mem --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+        run: pytest tests/ --cov=graph_mem --cov-report=term-missing --cov-report=xml --cov-fail-under=80
       - name: Upload coverage
         if: matrix.python-version == '3.13'
         uses: actions/upload-artifact@v4
@@ -59,7 +96,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, frontend]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -74,6 +111,22 @@ jobs:
           pip install dist/*.whl
           graph-mem --help
           python -c "from graph_mem.server import mcp; print('Import OK')"
+      # Installing from the wheel is the only way to catch packaging paths that
+      # resolve correctly in a source checkout and nowhere else.
+      - name: Verify packaged data resolves from an installed wheel
+        run: |
+          cd /tmp
+          python -c "
+          from graph_mem.cli.install import _assemble_skill_content
+          content = _assemble_skill_content(None)
+          assert len(content) > 10000, f'skill content is only {len(content)} chars — the bundled skill did not resolve'
+          print(f'Bundled skill resolved: {len(content)} chars')
+          "
+          python -c "
+          from graph_mem.ui.server import _resolve_frontend_dir
+          assert _resolve_frontend_dir() is not None, 'bundled frontend did not resolve from the wheel'
+          print('Bundled frontend resolved')
+          "
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

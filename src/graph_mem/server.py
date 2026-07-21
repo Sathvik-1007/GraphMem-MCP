@@ -1,28 +1,25 @@
-"""FastMCP server — registers all 28 Graph Memory MCP tools.
+"""FastMCP server — the public entry point for all 28 Graph Memory MCP tools.
 
-This is the public entry point.  The actual tool implementations live in
+Holds no logic of its own.  Tool implementations live in
 :mod:`graph_mem.tools` sub-modules; importing this module triggers their
-registration on the shared ``mcp`` FastMCP instance.
+registration on the shared ``mcp`` FastMCP instance and re-exports them, so
+``graph_mem.server`` is the one import an embedder needs.
 
-Backwards-compatible: all tool functions and internal helpers that were
-previously importable from ``graph_mem.server`` are re-exported here.
+Only the public surface is re-exported.  Internals (``_state``,
+``_error_response``, the embed helpers) belong to
+:mod:`graph_mem.tools._core` and are imported from there by the code that
+needs them.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
-# Import everything from the tools package — this triggers @mcp.tool()
-# registration and makes all symbols available at ``graph_mem.server.*``
-# for backwards compatibility with existing tests and CLI.
-from graph_mem.tools import (  # noqa: F401 — re-exported
+# Importing the tools package runs every @tool() registration as a side
+# effect; the names below are re-exported so callers have a single import.
+from graph_mem.tools import (  # noqa: F401 — re-exported public API
     AppState,
     InitializedState,
-    _embed_entities,
-    _embed_observations,
-    _error_response,
-    _require_state,
-    _state,
     add_entities,
     add_observations,
     add_relationships,
@@ -53,8 +50,11 @@ from graph_mem.tools import (  # noqa: F401 — re-exported
     update_observation,
     update_relationship,
 )
+from graph_mem.tools._core import _state
 
 if TYPE_CHECKING:
+    from mcp.server.fastmcp import FastMCP
+
     from graph_mem.utils import Config
 
 # ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def create_server(config: Config | None = None) -> type(mcp):
+def create_server(config: Config | None = None) -> FastMCP:
     """Create and return the FastMCP server instance.
 
     Optionally accepts a pre-built :class:`Config` for testing or

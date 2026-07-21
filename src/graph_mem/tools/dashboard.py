@@ -61,9 +61,7 @@ async def open_dashboard(
         if not isinstance(port, int) or isinstance(port, bool):
             raise ValidationError(f"port must be an integer, got {type(port).__name__}")
         if not _MIN_PORT <= port <= _MAX_PORT:
-            raise ValidationError(
-                f"port must be between {_MIN_PORT} and {_MAX_PORT}, got {port}"
-            )
+            raise ValidationError(f"port must be between {_MIN_PORT} and {_MAX_PORT}, got {port}")
 
         state = _require_state()
 

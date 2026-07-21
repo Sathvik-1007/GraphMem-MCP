@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from graph_mem.graph.engine import ObservationResult
 
 from graph_mem.models import Entity, Observation
 from graph_mem.utils import GraphMemError
@@ -60,7 +63,7 @@ async def add_entities(entities: list[dict[str, Any]]) -> dict[str, Any]:
         await _embed_entities(entity_ids)
 
         # Batch all observations: collect, insert per-entity, then embed ALL at once
-        all_obs_results: list[dict[str, Any]] = []
+        all_obs_results: list[ObservationResult] = []
         for idx, obs_texts in obs_by_index:
             entity_name = str(results[idx]["name"])
             obs_objs = [Observation.pending(text) for text in obs_texts]

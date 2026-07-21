@@ -162,7 +162,13 @@ class Database:
             return
 
         try:
-            await self._conn.load_extension(sqlite_vec.loadable_path())
+            # sqlite_vec ships no type information, so this call is untyped by
+            # definition. Narrowing to str here is the boundary: nothing
+            # untyped travels further than this line.
+            extension_path: str = str(
+                sqlite_vec.loadable_path()  # type: ignore[no-untyped-call]
+            )
+            await self._conn.load_extension(extension_path)
             self._vec_loaded = True
             log.debug("sqlite-vec extension loaded")
         except (AttributeError, sqlite3.Error, OSError) as exc:
