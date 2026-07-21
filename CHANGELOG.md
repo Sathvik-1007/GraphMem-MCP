@@ -5,17 +5,23 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] — 2026-07-21
+## [1.0.0] — 2026-07-22
 
-The package is now published as **`graphmem-mcp`**. The name `graph-mem` was
-already taken on PyPI by an unrelated, abandoned package, so `pip install
-graph-mem` never installed this project. The import name is unchanged
-(`import graph_mem`) and the CLI is still `graph-mem`.
+First public release, published as **`graphmem-mcp`**. The obvious name
+`graph-mem` was already taken on PyPI by an unrelated, abandoned package, so it
+was never installable under that name. The import name is `graph_mem` and the
+CLI is `graph-mem`.
 
-This release fixes seven defects that made the previous version unsafe or
-unusable under load. Every one was reproduced before and after the fix.
+1.0.0 rather than 0.x because the public API — 28 MCP tools with real JSON
+schemas, bounded responses, and documented failure behaviour — is settled, and
+changes to it will follow semantic versioning from here. It is not a claim of
+perfection: the [known gaps](docs/ARCHITECTURE.md#known-gaps) are written down
+rather than glossed over.
 
-### Security
+Everything below was found and fixed before this release. Every defect was
+reproduced before the fix and again after it; the reproductions became tests.
+
+### Security hardening
 
 - **Graph names are validated at the MCP trust boundary.** `switch_graph` and
   `delete_graph` turned an unvalidated, model-supplied string into a filesystem
@@ -153,9 +159,4 @@ unusable under load. Every one was reproduced before and after the fix.
 aiosqlite worker-thread exception warning, which was hiding a real connection
 leak. Every fix carries a test that fails without it, verified by reverting.
 
-## [0.1.0]
-
-Initial release.
-
-[0.2.0]: https://github.com/Sathvik-1007/GraphMem-MCP/releases/tag/v0.2.0
-[0.1.0]: https://github.com/Sathvik-1007/GraphMem-MCP/releases/tag/v0.1.0
+[1.0.0]: https://github.com/Sathvik-1007/GraphMem-MCP/releases/tag/v1.0.0

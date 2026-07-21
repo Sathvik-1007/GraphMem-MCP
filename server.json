@@ -3,7 +3,7 @@
   "name": "io.github.Sathvik-1007/graphmem-mcp",
   "title": "Graph-Mem",
   "description": "Persistent knowledge-graph memory for AI agents, with local semantic search. No API keys.",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "repository": {
     "url": "https://github.com/Sathvik-1007/GraphMem-MCP",
     "source": "github"
@@ -14,7 +14,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "graphmem-mcp",
-      "version": "0.2.0",
+      "version": "1.0.0",
       "transport": {
         "type": "stdio"
       },
