@@ -64,9 +64,17 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-aiohttp>=1.0",
     "pytest-cov>=4.0",
-    "ruff>=0.4",
-    "mypy>=1.10",
+    "hypothesis>=6.100",
     "coverage>=7.0",
+    # The two gates that decide whether a change is accepted are pinned to a
+    # minor line, not left open. Both ruff's formatter and mypy's inference
+    # change between minor releases, so an open range means a contributor and
+    # CI can disagree about whether identical code passes — which is what
+    # happened: ruff 0.14 locally and 0.15 in CI reformatted a file
+    # differently and failed a release that was green on the machine that cut
+    # it. Bump these deliberately, then reformat in the same commit.
+    "ruff>=0.14.14,<0.15",
+    "mypy>=1.19,<1.20",
 ]
 
 [project.scripts]
@@ -103,7 +111,13 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TCH", "RUF"]
 known-first-party = ["graph_mem"]
 
 [tool.mypy]
-python_version = "3.10"
+# Deliberately not setting python_version. It pins mypy's parser to that
+# version, and third-party stubs increasingly use PEP 695 syntax that a 3.10
+# parser rejects — numpy 2.5's stubs fail with "Type statement is only
+# supported in Python 3.12 and greater", which is a fact about numpy, not about
+# this code. Ruff's target-version = "py310" still enforces 3.10-compatible
+# syntax in our own source, and the test matrix runs 3.10 through 3.13, so
+# compatibility is verified where it can actually be observed.
 strict = true
 warn_return_any = true
 warn_unused_configs = true
