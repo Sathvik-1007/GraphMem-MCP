@@ -763,21 +763,44 @@ class SQLiteBackend:
         or_clause = " OR ".join(quoted)
         return or_clause
 
-    async def fts_search_entities(self, query: str, limit: int) -> list[tuple[str, float]]:
+    async def fts_search_entities(
+        self, query: str, limit: int, entity_types: list[str] | None = None
+    ) -> list[tuple[str, float]]:
+        """Full-text search over entities, optionally restricted to types.
+
+        The type restriction is applied by the query, not by the caller
+        afterwards. Filtering a fixed-size candidate list post hoc silently
+        under-returns: with 40 matching notes and 3 matching people, a search
+        for people would look at the top-N rows overall, find no people among
+        them, and return nothing at all.
+        """
+        type_clause = ""
+        type_params: tuple[object, ...] = ()
+        if entity_types:
+            normalised = [t.strip().lower() for t in entity_types if t and t.strip()]
+            if normalised:
+                placeholders = ",".join("?" for _ in normalised)
+                type_clause = f" AND e.entity_type IN ({placeholders})"
+                type_params = tuple(normalised)
+
         try:
             rows = await self._require_db().fetch_all(
-                """
+                f"""
                 SELECT e.id, rank
                 FROM entities_fts fts
                 JOIN entities e ON e.rowid = fts.rowid
-                WHERE entities_fts MATCH ?
+                WHERE entities_fts MATCH ?{type_clause}
                 ORDER BY rank
                 LIMIT ?
                 """,
-                (self._sanitize_fts5_query(query), limit),
+                (self._sanitize_fts5_query(query), *type_params, limit),
             )
             return [(str(r["id"]), float(r["rank"])) for r in rows]
-        except (sqlite3.Error, ValueError) as exc:
+        except (sqlite3.Error, DatabaseError, ValueError) as exc:
+            # DatabaseError, not just sqlite3.Error: every query here goes
+            # through Database.fetch_all, which wraps SQLite failures. Listing
+            # only sqlite3.Error made this handler unreachable, so a damaged
+            # FTS index propagated instead of degrading to vector-only search.
             log.warning("FTS5 entity search failed: %s", exc)
             return []
 
@@ -795,7 +818,7 @@ class SQLiteBackend:
                 (self._sanitize_fts5_query(query), limit),
             )
             return [(str(r["id"]), float(r["rank"])) for r in rows]
-        except (sqlite3.Error, ValueError) as exc:
+        except (sqlite3.Error, DatabaseError, ValueError) as exc:
             log.warning("FTS5 observation search failed: %s", exc)
             return []
 
@@ -810,7 +833,7 @@ class SQLiteBackend:
                 (self._sanitize_fts5_query(name), limit),
             )
             suggestions = [str(r["name"]) for r in rows]
-        except (sqlite3.Error, ValueError, OSError) as exc:
+        except (sqlite3.Error, DatabaseError, ValueError, OSError) as exc:
             log.debug("FTS5 suggestion query failed for %r: %s", name, exc)
 
         # Fallback to LIKE (escape wildcards to prevent semantic injection)

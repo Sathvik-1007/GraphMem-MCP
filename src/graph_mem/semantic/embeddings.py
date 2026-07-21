@@ -46,7 +46,12 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 import numpy.typing as npt
 
-from graph_mem.utils.errors import DimensionMismatchError, EmbeddingError, ModelLoadError
+from graph_mem.utils.errors import (
+    DatabaseError,
+    DimensionMismatchError,
+    EmbeddingError,
+    ModelLoadError,
+)
 from graph_mem.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -337,7 +342,10 @@ class EmbeddingEngine:
             # If model load fails later, _ensure_model_loaded() sets
             # _available = False and raises.
             self._available = True
-        except (sqlite3.Error, ValueError) as exc:
+        except (sqlite3.Error, DatabaseError, ValueError) as exc:
+            # DatabaseError too: the storage layer wraps SQLite failures, so a
+            # handler listing only sqlite3.Error never fires and initialize()
+            # raises despite documenting that it never does.
             log.warning("Embedding initialization failed: %s. Semantic search disabled.", exc)
             self._available = False
 

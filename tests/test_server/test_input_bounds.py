@@ -62,9 +62,9 @@ class TestLimitsNeverReachSqlUnbounded:
         original_entities = storage.fts_search_entities
         original_observations = storage.fts_search_observations
 
-        async def spy_entities(query: str, limit: int) -> Any:
+        async def spy_entities(query: str, limit: int, entity_types: Any = None) -> Any:
             seen.append(limit)
-            return await original_entities(query, limit)
+            return await original_entities(query, limit, entity_types)
 
         async def spy_observations(query: str, limit: int) -> Any:
             seen.append(limit)

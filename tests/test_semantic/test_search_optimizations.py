@@ -416,3 +416,134 @@ async def test_observation_search_does_not_double_query_entities(search_env):
     assert results
     assert results[0]["entity_name"] == "Host"
     assert results[0]["entity_type"] == "service"
+
+
+# ── Type filtering must survive candidate retrieval ──────────────────────────
+
+
+class TestTypeFilterRetrieval:
+    """A type filter must be applied when candidates are *fetched*, not after.
+
+    Regression: filtering happened after the candidate pool was drawn, and the
+    pool was only `limit * CANDIDATE_MULTIPLIER` rows. With enough entities of
+    other types ranked above them, the entities the caller asked for never
+    entered the pool, and a scoped search returned nothing at all — precisely
+    when scoping is worth using.
+    """
+
+    async def test_rare_type_is_found_among_many_decoys(self, tmp_path) -> None:
+        """3 matching people hidden behind 200 matching notes are still found."""
+        import time
+
+        from graph_mem.semantic import EmbeddingEngine, HybridSearch
+        from graph_mem.storage import SQLiteBackend
+
+        storage = SQLiteBackend(tmp_path / "filter.db")
+        await storage.initialize()
+        try:
+            now = time.time()
+            for i in range(200):
+                await storage.upsert_entity(
+                    entity_id=f"n{i}",
+                    name=f"alpha noise {i}",
+                    entity_type="note",
+                    description="alpha",
+                    properties={},
+                    created_at=now,
+                    updated_at=now,
+                )
+            for i in range(3):
+                await storage.upsert_entity(
+                    entity_id=f"p{i}",
+                    name=f"alpha person {i}",
+                    entity_type="person",
+                    description="alpha",
+                    properties={},
+                    created_at=now,
+                    updated_at=now,
+                )
+
+            # Keep the embedding engine unavailable so no model is loaded; the
+            # full-text channel alone must satisfy the filter.
+            await storage._require_db().execute("DROP TABLE metadata")
+            embeddings = EmbeddingEngine(model_name="test", use_onnx=False)
+            await embeddings.initialize(storage)
+            assert embeddings.available is False
+
+            search = HybridSearch(storage, embeddings)
+            results = await search.search_entities("alpha", limit=3, entity_types=["person"])
+
+            assert len(results) == 3, f"filter under-returned: {results}"
+            assert all(r["entity_type"] == "person" for r in results)
+        finally:
+            await storage.close()
+
+    async def test_filter_matching_nothing_returns_empty(self, tmp_path) -> None:
+        """A filter no entity satisfies yields nothing, not an error."""
+        import time
+
+        from graph_mem.semantic import EmbeddingEngine, HybridSearch
+        from graph_mem.storage import SQLiteBackend
+
+        storage = SQLiteBackend(tmp_path / "empty.db")
+        await storage.initialize()
+        try:
+            now = time.time()
+            await storage.upsert_entity(
+                entity_id="n1",
+                name="alpha note",
+                entity_type="note",
+                description="alpha",
+                properties={},
+                created_at=now,
+                updated_at=now,
+            )
+            await storage._require_db().execute("DROP TABLE metadata")
+            embeddings = EmbeddingEngine(model_name="test", use_onnx=False)
+            await embeddings.initialize(storage)
+
+            results = await HybridSearch(storage, embeddings).search_entities(
+                "alpha", limit=5, entity_types=["nonexistent"]
+            )
+
+            assert results == []
+        finally:
+            await storage.close()
+
+    async def test_fts_backend_filters_by_type_in_sql(self, tmp_path) -> None:
+        """The backend itself honours the filter, not just the layer above it."""
+        import time
+
+        from graph_mem.storage import SQLiteBackend
+
+        storage = SQLiteBackend(tmp_path / "backend.db")
+        await storage.initialize()
+        try:
+            now = time.time()
+            for i in range(50):
+                await storage.upsert_entity(
+                    entity_id=f"n{i}",
+                    name=f"widget {i}",
+                    entity_type="note",
+                    description="",
+                    properties={},
+                    created_at=now,
+                    updated_at=now,
+                )
+            await storage.upsert_entity(
+                entity_id="p1",
+                name="widget person",
+                entity_type="person",
+                description="",
+                properties={},
+                created_at=now,
+                updated_at=now,
+            )
+
+            unfiltered = await storage.fts_search_entities("widget", 5)
+            filtered = await storage.fts_search_entities("widget", 5, ["person"])
+
+            assert len(unfiltered) == 5
+            assert [eid for eid, _ in filtered] == ["p1"]
+        finally:
+            await storage.close()

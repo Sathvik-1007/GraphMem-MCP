@@ -76,6 +76,13 @@ MAX_RRF_SCORE = 1.0 / (RRF_K + 1)
 # vector scans meaningfully more expensive.
 CANDIDATE_MULTIPLIER = 3
 
+# Extra breadth for the vector channel when a type filter is active. sqlite-vec
+# performs a KNN scan that cannot apply a WHERE clause, so the filter can only
+# be applied to its results; a wider pool keeps matching entities from being
+# crowded out by higher-ranked entities of other types. The full-text channel
+# filters in SQL instead and does not use this.
+FILTERED_CANDIDATE_MULTIPLIER = 20
+
 # Relationships attached to a single search result.  A hub entity can have
 # thousands of edges and the consumer is a language model with a context
 # budget, so the list is capped; results report whether the cap was hit via
@@ -140,10 +147,20 @@ class HybridSearch:
 
         return results
 
-    async def _fts_entity_search(self, query: str, limit: int) -> dict[str, float]:
-        """Run FTS5 search on entities and return ``{id: rrf_score}``."""
+    async def _fts_entity_search(
+        self, query: str, limit: int, entity_types: list[str] | None = None
+    ) -> dict[str, float]:
+        """Run FTS5 search on entities and return ``{id: rrf_score}``.
+
+        The type filter is passed down so the candidate pool is drawn from
+        *matching* entities. Widening the pool and filtering afterwards cannot
+        fix this in general: with enough non-matching entities ranked above
+        them, the ones the caller asked for never enter the pool at all.
+        """
         results: dict[str, float] = {}
-        rows = await self._storage.fts_search_entities(query, limit * CANDIDATE_MULTIPLIER)
+        rows = await self._storage.fts_search_entities(
+            query, limit * CANDIDATE_MULTIPLIER, entity_types
+        )
         for rank, (entity_id, _rank_score) in enumerate(rows):
             results[entity_id] = 1.0 / (RRF_K + rank + 1)
         return results
@@ -309,8 +326,16 @@ class HybridSearch:
                 ``obs_boost_factor * MAX_OBS_BOOST`` from observation matches.
                 Default 0.0 (no filtering).
         """
-        vec_results = await self._vector_search(query, "entity_embeddings", limit)
-        fts_results = await self._fts_entity_search(query, limit)
+        vec_results = await self._vector_search(
+            query,
+            "entity_embeddings",
+            # A type filter discards most candidates, so the vector channel —
+            # which cannot filter inside a KNN scan — is asked for a wider pool
+            # to compensate. The FTS channel filters in SQL and needs no
+            # widening.
+            limit * (FILTERED_CANDIDATE_MULTIPLIER if entity_types else 1),
+        )
+        fts_results = await self._fts_entity_search(query, limit, entity_types)
         scored = self._rrf_fuse(vec_results, fts_results, alpha=self._alpha)
 
         # ── Observation-boosted entity fusion ────────────────────
