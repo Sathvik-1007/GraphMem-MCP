@@ -29,8 +29,7 @@ async def db(tmp_path: Path) -> AsyncIterator[Database]:
     """An initialised database with a single-column table ``t`` to write into."""
     database = Database(tmp_path / "edge.db")
     await database.initialize()
-    cursor = await database.execute("CREATE TABLE t (v TEXT)")
-    await cursor.close()
+    await database.execute("CREATE TABLE t (v TEXT)")
     yield database
     await database.close()
 
@@ -475,10 +474,17 @@ async def test_execute_many_inserts_every_row(db: Database) -> None:
     assert await _values(db) == ["a", "b"]
 
 
-async def test_fetch_helpers_close_their_cursors(
+async def test_every_helper_closes_its_cursor(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """fetch_one/fetch_all close their cursor; execute() hands ownership over."""
+    """No statement helper may leave a cursor open.
+
+    Regression: execute() and execute_many() used to return aiosqlite's cursor
+    without closing it, and nearly every caller discarded it. The garbage
+    collector then finalised it after the event loop had closed, and the
+    connection's worker thread raised "Event loop is closed" during an
+    unrelated test's teardown.
+    """
     closed: list[int] = []
     real_close = aiosqlite.Cursor.close
 
@@ -494,7 +500,20 @@ async def test_fetch_helpers_close_their_cursors(
     await db.fetch_one("SELECT v FROM t")
     assert len(closed) == 2
 
-    cursor = await db.execute("SELECT v FROM t")
-    assert len(closed) == 2, "execute() must leave the cursor for the caller to close"
-    await cursor.close()
-    assert len(closed) == 3
+    await db.execute("SELECT v FROM t")
+    assert len(closed) == 3, "execute() must close the cursor it opened"
+
+    await db.execute_many("INSERT INTO t (v) VALUES (?)", [("x",)])
+    assert len(closed) == 4, "execute_many() must close the cursor it opened"
+
+
+async def test_execute_returns_the_number_of_rows_affected(db: Database) -> None:
+    """The row count is what callers wanted from the cursor; hand that over."""
+    await db.execute_many("INSERT INTO t (v) VALUES (?)", [("a",), ("b",), ("c",)])
+
+    assert await db.execute("UPDATE t SET v = 'z' WHERE v IN ('a', 'b')") == 2
+    assert await db.execute("DELETE FROM t WHERE v = 'nothing_matches'") == 0
+
+
+async def test_execute_many_returns_the_number_of_rows_affected(db: Database) -> None:
+    assert await db.execute_many("INSERT INTO t (v) VALUES (?)", [("a",), ("b",)]) == 2

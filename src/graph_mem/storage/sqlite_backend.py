@@ -517,8 +517,7 @@ class SQLiteBackend:
         if relationship_type is not None:
             sql += " AND relationship_type = ?"
             params.append(relationship_type.strip().lower())
-        cursor = await self._require_db().execute(sql, tuple(params))
-        return cursor.rowcount
+        return await self._require_db().execute(sql, tuple(params))
 
     async def get_relationships_by_column(
         self, column: str, entity_id: str
@@ -605,11 +604,10 @@ class SQLiteBackend:
         return int(row["cnt"]) if row else 0
 
     async def move_observations(self, from_entity_id: str, to_entity_id: str) -> int:
-        cursor = await self._require_db().execute(
+        return await self._require_db().execute(
             "UPDATE observations SET entity_id = ? WHERE entity_id = ?",
             (to_entity_id, from_entity_id),
         )
-        return cursor.rowcount
 
     async def count_observations(self) -> int:
         row = await self._require_db().fetch_one("SELECT COUNT(*) AS cnt FROM observations")
@@ -617,16 +615,15 @@ class SQLiteBackend:
 
     async def delete_observation(self, obs_id: str) -> bool:
         db = self._require_db()
-        cursor = await db.execute("DELETE FROM observations WHERE id = ?", (obs_id,))
-        return cursor.rowcount > 0
+        return await db.execute("DELETE FROM observations WHERE id = ?", (obs_id,)) > 0
 
     async def update_observation(self, obs_id: str, content: str) -> bool:
         db = self._require_db()
-        cursor = await db.execute(
+        changed = await db.execute(
             "UPDATE observations SET content = ? WHERE id = ?",
             (content, obs_id),
         )
-        return cursor.rowcount > 0
+        return changed > 0
 
     # ── Embedding operations ─────────────────────────────────────────────
 

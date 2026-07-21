@@ -67,7 +67,9 @@ _PRAGMAS = [
 
 async def _apply_pragmas(db: aiosqlite.Connection) -> None:
     for pragma in _PRAGMAS:
-        await db.execute(pragma)
+        # Closed rather than discarded: see Database._run.
+        async with await db.execute(pragma):
+            pass
 
 
 def _sql_error_message(exc: sqlite3.Error, sql: str) -> str:
@@ -207,22 +209,54 @@ class Database:
         else:
             log.debug("Database closed")
 
-    async def execute(self, sql: str, params: tuple[object, ...] = ()) -> aiosqlite.Cursor:
-        """Execute *sql*, returning the cursor.
+    async def execute(self, sql: str, params: tuple[object, ...] = ()) -> int:
+        """Execute *sql* and return the number of rows it affected.
 
-        The caller owns the returned cursor and must close it. Prefer
-        :meth:`fetch_one` or :meth:`fetch_all`, which handle that.
+        The cursor is closed here rather than handed out. aiosqlite's
+        ``execute`` returns a Cursor, and an unclosed one is finalised by the
+        garbage collector — which, after the event loop has gone, raises
+        "Event loop is closed" from the connection's worker thread. That
+        surfaced as an intermittent teardown failure with no obvious link to
+        the statement that caused it.
+
+        Of the roughly sixty call sites in this package, four wanted the row
+        count and the rest discarded the cursor entirely, so returning the
+        count is both what callers need and the shape that cannot leak. Use
+        :meth:`fetch_one` or :meth:`fetch_all` when rows are wanted.
         """
         try:
-            return await self.conn.execute(sql, params)
+            cursor = await self.conn.execute(sql, params)
         except sqlite3.Error as exc:
             raise DatabaseError(_sql_error_message(exc, sql)) from exc
+        async with cursor:
+            return int(cursor.rowcount)
 
-    async def execute_many(self, sql: str, params_seq: list[tuple[object, ...]]) -> None:
+    async def execute_many(self, sql: str, params_seq: list[tuple[object, ...]]) -> int:
+        """Execute *sql* once per parameter tuple; return rows affected.
+
+        Closes its cursor for the same reason :meth:`execute` does.
+        """
         try:
-            await self.conn.executemany(sql, params_seq)
+            cursor = await self.conn.executemany(sql, params_seq)
         except sqlite3.Error as exc:
             raise DatabaseError(_sql_error_message(exc, sql)) from exc
+        async with cursor:
+            return int(cursor.rowcount)
+
+    async def _run(self, sql: str) -> None:
+        """Execute a control statement and close the cursor it opened.
+
+        Transaction control (BEGIN/COMMIT/SAVEPOINT/...) produces a cursor like
+        any other statement, and aiosqlite finalises an unclosed one from the
+        garbage collector — which, once the event loop has gone, raises "Event
+        loop is closed" out of the connection's worker thread, during whatever
+        unrelated code happens to be running.
+
+        Unlike :meth:`execute` this lets ``sqlite3.Error`` through unwrapped,
+        because :meth:`_unwind` catches that type to drive its recovery.
+        """
+        async with await self.conn.execute(sql):
+            pass
 
     async def fetch_one(self, sql: str, params: tuple[object, ...] = ()) -> dict[str, Any] | None:
         try:
@@ -271,7 +305,7 @@ class Database:
         if is_outermost:
             await self._write_lock.acquire()
             try:
-                await self.conn.execute("BEGIN IMMEDIATE")
+                await self._run("BEGIN IMMEDIATE")
             except BaseException:
                 self._write_lock.release()
                 raise
@@ -280,7 +314,7 @@ class Database:
             savepoint = ""
         else:
             savepoint = f"sp_{self._txn_depth}"
-            await self.conn.execute(f"SAVEPOINT {savepoint}")
+            await self._run(f"SAVEPOINT {savepoint}")
             self._txn_depth += 1
 
         try:
@@ -307,22 +341,22 @@ class Database:
         """
         try:
             if is_outermost:
-                await self.conn.execute("COMMIT" if committing else "ROLLBACK")
+                await self._run("COMMIT" if committing else "ROLLBACK")
             elif committing:
-                await self.conn.execute(f"RELEASE {savepoint}")
+                await self._run(f"RELEASE {savepoint}")
             else:
                 # ROLLBACK TO rewinds the savepoint but leaves it on the stack;
                 # RELEASE then pops it, so the depth we track and SQLite's own
                 # savepoint stack stay in agreement.
-                await self.conn.execute(f"ROLLBACK TO {savepoint}")
-                await self.conn.execute(f"RELEASE {savepoint}")
+                await self._run(f"ROLLBACK TO {savepoint}")
+                await self._run(f"RELEASE {savepoint}")
         except sqlite3.Error as exc:
             # Finalisation failed — most often a disk or lock error. Try to
             # abandon the whole transaction rather than leave the connection
             # holding a half-finished one that the next caller would inherit.
             log.error("Failed to %s transaction: %s", "commit" if committing else "roll back", exc)
             try:
-                await self.conn.execute("ROLLBACK")
+                await self._run("ROLLBACK")
             except sqlite3.Error as rollback_exc:
                 # A failed recovery rollback is not itself proof of trouble:
                 # "cannot rollback - no transaction is active" means SQLite has
