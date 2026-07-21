@@ -193,9 +193,13 @@ async def test_cancellation_releases_the_write_lock(tmp_path: Path) -> None:
             await task
 
         # Would time out rather than fail if the lock had leaked.
-        async with asyncio.timeout(5):
+        # asyncio.wait_for, not asyncio.timeout: the latter is 3.11+, and this
+        # project supports 3.10.
+        async def _write_after_cancel() -> None:
             async with db.transaction():
                 await db.execute("INSERT INTO note VALUES ('after_cancel')")
+
+        await asyncio.wait_for(_write_after_cancel(), timeout=5)
 
         assert await _values(db) == ["after_cancel"]
     finally:
